@@ -1,0 +1,690 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import urllib.error
+import urllib.request
+import uuid
+from datetime import date, datetime, time, timedelta
+from pathlib import Path
+from typing import Any, Literal
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+ROOT = Path(__file__).resolve().parent
+DB_PATH = Path(os.getenv("PLANB_DB", ROOT / "planb.sqlite3"))
+TODAY = date(2026, 10, 19)
+
+app = FastAPI(title="Plan B API", version="2.0.0", description="Deterministic planning, recovery, approval, history and provider-ready agent API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class TaskCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=1200)
+    duration_minutes: int = Field(ge=5, le=720)
+    deadline: str | None = None
+    earliest_start: str | None = None
+    fixed_start: str | None = None
+    priority: Literal["low", "medium", "high"] = "medium"
+    flexibility: Literal["flexible", "fixed", "buffer"] = "flexible"
+    splittable: bool = True
+    tags: list[str] = []
+    project_id: str | None = None
+
+
+class TaskPatch(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    duration_minutes: int | None = Field(default=None, ge=5, le=720)
+    actual_minutes: int | None = Field(default=None, ge=0, le=1440)
+    deadline: str | None = None
+    earliest_start: str | None = None
+    fixed_start: str | None = None
+    priority: Literal["low", "medium", "high"] | None = None
+    flexibility: Literal["flexible", "fixed", "buffer"] | None = None
+    splittable: bool | None = None
+    status: Literal["open", "done", "archived"] | None = None
+    tags: list[str] | None = None
+    project_id: str | None = None
+
+
+class ProjectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    color: str = Field(default="#e4794c", pattern=r"^#[0-9a-fA-F]{6}$")
+    target_date: str | None = None
+
+
+class ProjectPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    target_date: str | None = None
+    status: Literal["active", "completed", "archived"] | None = None
+
+
+class PreferencesIn(BaseModel):
+    display_name: str = Field(default="Koushik", min_length=1, max_length=80)
+    day_start: str = "09:00"
+    day_end: str = "21:00"
+    break_minutes: int = Field(default=10, ge=0, le=120)
+    default_buffer_minutes: int = Field(default=15, ge=0, le=180)
+    planning_style: Literal["realistic", "balanced", "ambitious"] = "realistic"
+    timezone: str = "Asia/Calcutta"
+    voice_input: bool = True
+    voice_output: bool = False
+    language: str = "en-IN"
+    onboarding_complete: bool = True
+
+
+class DisruptionIn(BaseModel):
+    disruption_minutes: int = Field(ge=1, le=720)
+    reason: str = Field(default="Unexpected disruption", max_length=500)
+    task_id: str | None = None
+
+
+class AssistantIn(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class OpportunityResponse(BaseModel):
+    accepted: bool
+
+
+def db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def utcnow() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def uid() -> str:
+    return str(uuid.uuid4())
+
+
+def parse_clock(value: str | None, fallback: time) -> time:
+    if not value:
+        return fallback
+    try:
+        return time.fromisoformat(value[-5:])
+    except ValueError:
+        return fallback
+
+
+def parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def clock(value: datetime) -> str:
+    hour = value.hour % 12 or 12
+    return f"{hour}:{value.minute:02d} {'AM' if value.hour < 12 else 'PM'}"
+
+
+def init_db() -> None:
+    with db() as conn:
+        existing = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone()
+        migrated_legacy = False
+        if existing:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+            if "description" not in columns:
+                conn.execute("PRAGMA foreign_keys = OFF")
+                for table in ("proposals", "plans", "events", "tasks"):
+                    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        legacy = f"{table}_legacy_v1"
+                        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (legacy,)).fetchone():
+                            conn.execute(f"ALTER TABLE {table} RENAME TO {legacy}")
+                migrated_legacy = True
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS tasks (
+              id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+              duration_minutes INTEGER NOT NULL, actual_minutes INTEGER, deadline TEXT,
+              earliest_start TEXT, fixed_start TEXT, priority TEXT NOT NULL,
+              flexibility TEXT NOT NULL, splittable INTEGER NOT NULL DEFAULT 1,
+              tags_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'open',
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS projects (
+              id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+              color TEXT NOT NULL DEFAULT '#e4794c', target_date TEXT,
+              status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS preferences (
+              id INTEGER PRIMARY KEY CHECK (id=1), display_name TEXT NOT NULL,
+              day_start TEXT NOT NULL, day_end TEXT NOT NULL, break_minutes INTEGER NOT NULL,
+              default_buffer_minutes INTEGER NOT NULL, planning_style TEXT NOT NULL,
+              timezone TEXT NOT NULL, voice_input INTEGER NOT NULL, voice_output INTEGER NOT NULL,
+              language TEXT NOT NULL, onboarding_complete INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS plans (
+              id TEXT PRIMARY KEY, version INTEGER NOT NULL, status TEXT NOT NULL,
+              reason TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL,
+              selected_proposal_id TEXT, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS proposals (
+              id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, title TEXT NOT NULL,
+              description TEXT NOT NULL, tradeoff TEXT NOT NULL, feasible INTEGER NOT NULL,
+              validation_json TEXT NOT NULL, revised_json TEXT NOT NULL,
+              approved INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+              FOREIGN KEY(plan_id) REFERENCES plans(id)
+            );
+            CREATE TABLE IF NOT EXISTS events (
+              id TEXT PRIMARY KEY, event_type TEXT NOT NULL, detail TEXT NOT NULL,
+              metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
+            );
+            """
+        )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+        if "project_id" not in columns:
+            conn.execute("ALTER TABLE tasks ADD COLUMN project_id TEXT")
+        if migrated_legacy:
+            conn.execute(
+                """INSERT OR IGNORE INTO tasks
+                (id,title,description,duration_minutes,actual_minutes,deadline,earliest_start,fixed_start,priority,flexibility,splittable,tags_json,status,created_at,updated_at)
+                SELECT id,title,'',duration_minutes,NULL,deadline,NULL,NULL,priority,flexibility,splittable,'[]',status,created_at,created_at
+                FROM tasks_legacy_v1"""
+            )
+            conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            """INSERT OR IGNORE INTO preferences VALUES
+            (1,'Koushik','09:00','21:00',10,15,'realistic','Asia/Calcutta',1,0,'en-IN',1)"""
+        )
+        if os.getenv("PLANB_SEED", "1") == "1":
+            seed = [
+                ("Prepare project report", "Finalize the project narrative and evidence.", 60, None, "2026-10-19T12:00", None, "high", "flexible", 0, ["work"]),
+                ("Review lecture notes", "Review chapter 4 notes.", 45, None, None, None, "medium", "flexible", 1, ["study"]),
+                ("Parcel collection", "Collect parcel before the office closes.", 30, None, "2026-10-19T17:00", "2026-10-19T16:15", "medium", "fixed", 0, ["errand"]),
+                ("Team meeting", "Project sync with the team.", 60, None, None, "2026-10-19T14:00", "high", "fixed", 0, ["work"]),
+                ("Finish assignment", "Complete and upload the final assignment.", 120, None, "2026-10-19T18:00", None, "high", "flexible", 1, ["study"]),
+            ]
+            for title, description, duration, actual, deadline, fixed_start, priority, flexibility, splittable, tags in seed:
+                if conn.execute("SELECT 1 FROM tasks WHERE title=?", (title,)).fetchone():
+                    continue
+                stamp = utcnow()
+                conn.execute(
+                    """INSERT INTO tasks
+                    (id,title,description,duration_minutes,actual_minutes,deadline,earliest_start,fixed_start,priority,flexibility,splittable,tags_json,status,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (uid(), title, description, duration, actual, deadline, None, fixed_start, priority, flexibility, splittable, json.dumps(tags), "open", stamp, stamp),
+                )
+        project_seed = [
+            ("Product launch", "Report, launch and team delivery work", "#e4794c", "2026-10-23"),
+            ("Study sprint", "Lectures and assignment completion", "#657c9a", "2026-10-21"),
+            ("Personal admin", "Errands and personal commitments", "#71886b", None),
+        ]
+        for name, description, color, target_date in project_seed:
+            if not conn.execute("SELECT 1 FROM projects WHERE name=?", (name,)).fetchone():
+                stamp = utcnow()
+                conn.execute("INSERT INTO projects VALUES (?,?,?,?,?,?,?,?)", (uid(), name, description, color, target_date, "active", stamp, stamp))
+        project_ids = {row["name"]: row["id"] for row in conn.execute("SELECT id,name FROM projects")}
+        conn.execute("UPDATE tasks SET project_id=? WHERE project_id IS NULL AND tags_json LIKE '%study%'", (project_ids.get("Study sprint"),))
+        conn.execute("UPDATE tasks SET project_id=? WHERE project_id IS NULL AND tags_json LIKE '%errand%'", (project_ids.get("Personal admin"),))
+        conn.execute("UPDATE tasks SET project_id=? WHERE project_id IS NULL", (project_ids.get("Product launch"),))
+
+
+def task_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result["splittable"] = bool(result["splittable"])
+    result["tags"] = json.loads(result.pop("tags_json") or "[]")
+    return result
+
+
+def get_tasks(include_archived: bool = False) -> list[dict[str, Any]]:
+    where = "" if include_archived else "WHERE status != 'archived'"
+    with db() as conn:
+        return [task_from_row(row) for row in conn.execute(f"SELECT * FROM tasks {where} ORDER BY created_at")]
+
+
+def get_projects(include_archived: bool = False) -> list[dict[str, Any]]:
+    where = "" if include_archived else "WHERE p.status != 'archived'"
+    with db() as conn:
+        rows = conn.execute(f"""SELECT p.*,
+            COUNT(t.id) AS task_count,
+            SUM(CASE WHEN t.status='done' THEN 1 ELSE 0 END) AS completed_count,
+            COALESCE(SUM(CASE WHEN t.status!='archived' THEN t.duration_minutes ELSE 0 END),0) AS planned_minutes
+            FROM projects p LEFT JOIN tasks t ON t.project_id=p.id {where}
+            GROUP BY p.id ORDER BY p.created_at""").fetchall()
+    projects = []
+    for row in rows:
+        item = dict(row)
+        item["progress"] = round(item["completed_count"] / item["task_count"] * 100) if item["task_count"] else 0
+        projects.append(item)
+    return projects
+
+
+def get_preferences() -> dict[str, Any]:
+    with db() as conn:
+        row = conn.execute("SELECT * FROM preferences WHERE id=1").fetchone()
+    result = dict(row)
+    result["voice_input"] = bool(result["voice_input"])
+    result["voice_output"] = bool(result["voice_output"])
+    result["onboarding_complete"] = bool(result["onboarding_complete"])
+    return result
+
+
+def priority_rank(value: str) -> int:
+    return {"high": 0, "medium": 1, "low": 2}.get(value, 1)
+
+
+def schedule_tasks(tasks: list[dict[str, Any]], deferred_ids: set[str] | None = None, day_end_extension: int = 0, disruption: dict[str, Any] | None = None) -> dict[str, Any]:
+    prefs = get_preferences()
+    start = datetime.combine(TODAY, parse_clock(prefs["day_start"], time(9)))
+    day_end = datetime.combine(TODAY, parse_clock(prefs["day_end"], time(21))) + timedelta(minutes=day_end_extension)
+    buffer_minutes = prefs["default_buffer_minutes"]
+    deferred_ids = deferred_ids or set()
+    open_tasks = [t for t in tasks if t["status"] == "open" and t["id"] not in deferred_ids]
+    fixed = sorted([t for t in open_tasks if t["flexibility"] == "fixed" and t.get("fixed_start")], key=lambda t: t["fixed_start"])
+    flexible = sorted([t for t in open_tasks if t not in fixed], key=lambda t: (parse_dt(t.get("deadline")) or datetime.max, priority_rank(t["priority"]), t["created_at"]))
+    fixed_slots: list[tuple[datetime, datetime, dict[str, Any]]] = []
+    disrupted_id = disruption.get("task_id") if disruption else None
+    for task in fixed:
+        fixed_start = parse_dt(task["fixed_start"]) or start
+        extra = disruption["minutes"] if disruption and (task["id"] == disrupted_id or (not disrupted_id and "meeting" in task["title"].lower())) else 0
+        fixed_slots.append((fixed_start, fixed_start + timedelta(minutes=task["duration_minutes"] + extra), task))
+    blocks: list[dict[str, Any]] = []
+    cursor = start
+
+    def add_block(task: dict[str, Any], block_start: datetime, block_end: datetime, kind: str, detail: str | None = None):
+        deadline = parse_dt(task.get("deadline"))
+        late = bool(deadline and block_end > deadline)
+        blocks.append({
+            "task_id": task["id"], "title": task["title"], "start_iso": block_start.isoformat(), "end_iso": block_end.isoformat(),
+            "start": clock(block_start), "end": clock(block_end), "minutes": int((block_end-block_start).total_seconds()/60),
+            "kind": "risk" if late else kind, "label": "Misses deadline" if late else ("Fixed" if kind == "fixed" else "Scheduled"),
+            "detail": detail or f"{task['priority'].title()} priority · {task['duration_minutes']} min", "deadline": task.get("deadline"),
+        })
+
+    remaining = flexible.copy()
+    for fixed_start, fixed_end, fixed_task in fixed_slots:
+        while remaining:
+            task = remaining[0]
+            earliest = max(cursor, parse_dt(task.get("earliest_start")) or cursor)
+            needed = timedelta(minutes=task["duration_minutes"])
+            if earliest + needed <= fixed_start:
+                add_block(task, earliest, earliest + needed, "focus")
+                cursor = earliest + needed + timedelta(minutes=buffer_minutes)
+                remaining.pop(0)
+            else:
+                break
+        if cursor < fixed_start:
+            cursor = fixed_start
+        detail = "Fixed commitment"
+        if disruption and (fixed_task["id"] == disrupted_id or (not disrupted_id and "meeting" in fixed_task["title"].lower())):
+            detail = f"Fixed · overran by {disruption['minutes']} min"
+        add_block(fixed_task, fixed_start, fixed_end, "fixed", detail)
+        cursor = max(cursor, fixed_end + timedelta(minutes=buffer_minutes))
+    for task in remaining:
+        earliest = max(cursor, parse_dt(task.get("earliest_start")) or cursor)
+        end = earliest + timedelta(minutes=task["duration_minutes"])
+        add_block(task, earliest, end, "focus")
+        cursor = end + timedelta(minutes=buffer_minutes)
+
+    blocks.sort(key=lambda b: b["start_iso"])
+    risks = []
+    for block in blocks:
+        deadline = parse_dt(block.get("deadline"))
+        if deadline:
+            end = parse_dt(block["end_iso"])
+            slack = int((deadline - end).total_seconds() / 60)
+            if slack < 0:
+                risks.append({"task_id":block["task_id"],"task":block["title"],"severity":"critical","slack_minutes":slack,"reason":f"The scheduled block ends {-slack} minutes after its deadline."})
+            elif slack < max(45, buffer_minutes * 2):
+                risks.append({"task_id":block["task_id"],"task":block["title"],"severity":"high","slack_minutes":slack,"reason":f"Only {slack} minutes of safe time remain before the deadline."})
+    scheduled_minutes = sum(b["minutes"] for b in blocks)
+    capacity = int((day_end - start).total_seconds() / 60)
+    overrun = max(0, int((cursor - timedelta(minutes=buffer_minutes) - day_end).total_seconds() / 60))
+    if overrun:
+        risks.append({"task_id":None,"task":"Daily capacity","severity":"critical","slack_minutes":-overrun,"reason":f"The plan exceeds working hours by {overrun} minutes."})
+    free = max(0, capacity - scheduled_minutes - max(0, len(blocks)-1)*buffer_minutes)
+    confidence = max(24, min(96, 94 - len(risks)*14 - (12 if free < 30 else 0)))
+    return {"date":TODAY.isoformat(),"status":"at_risk" if risks else "on_track","blocks":blocks,"risks":risks,"metrics":{"scheduled_minutes":scheduled_minutes,"scheduled_hours":round(scheduled_minutes/60,1),"free_buffer_minutes":free,"deadlines_today":sum(1 for t in open_tasks if parse_dt(t.get("deadline")) and parse_dt(t["deadline"]).date()==TODAY),"risky_tasks":len(risks),"confidence":confidence},"deferred_task_ids":list(deferred_ids),"valid":not any(r["severity"]=="critical" for r in risks)}
+
+
+def latest_applied_plan() -> dict[str, Any] | None:
+    with db() as conn:
+        row = conn.execute("SELECT * FROM plans WHERE status IN ('applied','restored') ORDER BY created_at DESC LIMIT 1").fetchone()
+    return dict(row) if row else None
+
+
+def current_day() -> dict[str, Any]:
+    plan = latest_applied_plan()
+    if plan:
+        payload = json.loads(plan["after_json"])
+        payload["active_plan_id"] = plan["id"]
+        payload["plan_version"] = plan["version"]
+        return payload
+    payload = schedule_tasks(get_tasks())
+    payload["plan_version"] = 1
+    return payload
+
+
+def validate_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
+    critical = [r for r in candidate["risks"] if r["severity"] == "critical"]
+    return {"feasible":len(critical)==0,"checked":["durations","deadlines","fixed commitments","working hours","buffers"],"violations":critical,"checked_at":utcnow()}
+
+
+def generate_recovery(payload: DisruptionIn) -> dict[str, Any]:
+    tasks = get_tasks()
+    original = current_day()
+    disruption = {"minutes":payload.disruption_minutes,"task_id":payload.task_id}
+    affected = schedule_tasks(tasks, disruption=disruption)
+    movable = [t for t in tasks if t["status"]=="open" and t["flexibility"]=="flexible" and not t.get("deadline")]
+    defer_ids = {sorted(movable,key=lambda t:(priority_rank(t["priority"]),t["duration_minutes"]),reverse=True)[0]["id"]} if movable else set()
+    option_a = schedule_tasks(tasks, deferred_ids=defer_ids, disruption=disruption)
+    option_b = schedule_tasks(tasks, day_end_extension=60, disruption=disruption)
+    option_c = affected
+    validations = [validate_candidate(option_a), validate_candidate(option_b), validate_candidate(option_c)]
+    titles = ["Protect the nearest deadline", "Keep every task, extend the day", "Renegotiate one constraint"]
+    descriptions = [
+        "Move the lowest-risk flexible task to tomorrow and protect the commitments with deadlines.",
+        "Keep today's workload and use up to one additional hour after normal working time.",
+        "Keep the disrupted plan and ask to change a deadline or fixed collection window.",
+    ]
+    tradeoffs = [
+        "One flexible task moves to tomorrow; the most urgent deadline keeps recovery room.",
+        "Nothing is deferred, but the day becomes longer and has less personal buffer.",
+        "No automatic message is sent, and the other party may not agree.",
+    ]
+    candidates = [option_a, option_b, option_c]
+    plan_id = uid()
+    with db() as conn:
+        version = conn.execute("SELECT COALESCE(MAX(version),1)+1 FROM plans").fetchone()[0]
+        conn.execute("INSERT INTO plans VALUES (?,?,?,?,?,?,?,?)",(plan_id,version,"awaiting_approval",payload.reason,json.dumps(original),json.dumps(option_a),None,utcnow()))
+        options = []
+        for index, (title, description, tradeoff, candidate, validation) in enumerate(zip(titles,descriptions,tradeoffs,candidates,validations)):
+            proposal_id = uid()
+            conn.execute("INSERT INTO proposals VALUES (?,?,?,?,?,?,?,?,?,?)",(proposal_id,plan_id,title,description,tradeoff,int(validation["feasible"]),json.dumps(validation),json.dumps(candidate),0,utcnow()))
+            options.append({"id":proposal_id,"title":title,"description":description,"tradeoff":tradeoff,"feasible":validation["feasible"],"validation":validation,"revised_blocks":candidate["blocks"],"metrics":candidate["metrics"]})
+        conn.execute("INSERT INTO events VALUES (?,?,?,?,?)",(uid(),"recovery_generated",payload.reason,json.dumps({"minutes":payload.disruption_minutes}),utcnow()))
+    recommended = next((o["id"] for o in options if o["feasible"]), options[0]["id"])
+    return {"plan_id":plan_id,"reason":payload.reason,"disruption_minutes":payload.disruption_minutes,"affected_tasks":[r["task"] for r in affected["risks"]] or [b["title"] for b in affected["blocks"][-2:]],"original_blocks":original["blocks"],"options":options,"recommended_option_id":recommended,"validated":all("validation" in o for o in options)}
+
+
+def provider_status() -> dict[str, Any]:
+    provider = os.getenv("LLM_PROVIDER", "deterministic")
+    configured = bool(os.getenv("LLM_API_KEY"))
+    return {"provider":provider,"model":os.getenv("LLM_MODEL","not configured"),"configured":configured,"mode":"provider" if configured else "deterministic fallback","voice":{"asr":os.getenv("ASR_PROVIDER","browser"),"tts":os.getenv("TTS_PROVIDER","none")},"mcp":{"status":"ready","tools":10},"catalog":["OpenAI","Anthropic","Google Gemini","Groq","OpenRouter","Ollama","Custom OpenAI-compatible"]}
+
+
+def call_provider(message: str) -> str | None:
+    key = os.getenv("LLM_API_KEY")
+    base = os.getenv("LLM_BASE_URL")
+    model = os.getenv("LLM_MODEL")
+    if not key or not base or not model:
+        return None
+    body = json.dumps({"model":model,"messages":[{"role":"system","content":"You are Plan B, a concise schedule recovery assistant. Never claim a schedule is feasible unless the deterministic tool result says it is."},{"role":"user","content":message}],"temperature":0.2}).encode()
+    request = urllib.request.Request(base.rstrip("/")+"/chat/completions",data=body,headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"})
+    try:
+        with urllib.request.urlopen(request,timeout=20) as response:
+            return json.loads(response.read())["choices"][0]["message"]["content"]
+    except (urllib.error.URLError, KeyError, IndexError, json.JSONDecodeError):
+        return None
+
+
+@app.on_event("startup")
+def startup() -> None:
+    init_db()
+
+
+@app.get("/api/health")
+def health():
+    return {"ok":True,"service":"plan-b-api","version":"2.0.0","database":str(DB_PATH.name),"provider":provider_status()}
+
+
+@app.get("/api/preferences")
+def read_preferences():
+    return get_preferences()
+
+
+@app.put("/api/preferences")
+def save_preferences(payload: PreferencesIn):
+    values = payload.model_dump()
+    with db() as conn:
+        conn.execute("""UPDATE preferences SET display_name=?,day_start=?,day_end=?,break_minutes=?,default_buffer_minutes=?,planning_style=?,timezone=?,voice_input=?,voice_output=?,language=?,onboarding_complete=? WHERE id=1""",(values["display_name"],values["day_start"],values["day_end"],values["break_minutes"],values["default_buffer_minutes"],values["planning_style"],values["timezone"],int(values["voice_input"]),int(values["voice_output"]),values["language"],int(values["onboarding_complete"])))
+    return get_preferences()
+
+
+@app.get("/api/tasks")
+def list_tasks(include_archived: bool = False):
+    return get_tasks(include_archived)
+
+
+@app.post("/api/tasks")
+def create_task(payload: TaskCreate):
+    stamp = utcnow(); task_id = uid(); values = payload.model_dump()
+    with db() as conn:
+        conn.execute("""INSERT INTO tasks
+            (id,title,description,duration_minutes,actual_minutes,deadline,earliest_start,fixed_start,priority,flexibility,splittable,tags_json,status,created_at,updated_at,project_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(task_id,values["title"],values["description"],values["duration_minutes"],None,values["deadline"],values["earliest_start"],values["fixed_start"],values["priority"],values["flexibility"],int(values["splittable"]),json.dumps(values["tags"]),"open",stamp,stamp,values["project_id"]))
+        conn.execute("INSERT INTO events VALUES (?,?,?,?,?)",(uid(),"task_created",values["title"],json.dumps({"task_id":task_id}),stamp))
+    return next(t for t in get_tasks(True) if t["id"]==task_id)
+
+
+@app.patch("/api/tasks/{task_id}")
+def update_task(task_id: str, payload: TaskPatch):
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(400,"No fields supplied")
+    if "tags" in fields:
+        fields["tags_json"] = json.dumps(fields.pop("tags"))
+    fields["updated_at"] = utcnow()
+    with db() as conn:
+        if not conn.execute("SELECT id FROM tasks WHERE id=?",(task_id,)).fetchone():
+            raise HTTPException(404,"Task not found")
+        conn.execute(f"UPDATE tasks SET {', '.join(f'{key}=?' for key in fields)} WHERE id=?",(*fields.values(),task_id))
+        conn.execute("INSERT INTO events VALUES (?,?,?,?,?)",(uid(),"task_updated",task_id,json.dumps(fields),utcnow()))
+    return next(t for t in get_tasks(True) if t["id"]==task_id)
+
+
+@app.get("/api/projects")
+def list_projects(include_archived: bool = False):
+    return get_projects(include_archived)
+
+
+@app.post("/api/projects")
+def create_project(payload: ProjectCreate):
+    values = payload.model_dump(); project_id = uid(); stamp = utcnow()
+    with db() as conn:
+        conn.execute("INSERT INTO projects VALUES (?,?,?,?,?,?,?,?)", (project_id, values["name"], values["description"], values["color"], values["target_date"], "active", stamp, stamp))
+        conn.execute("INSERT INTO events VALUES (?,?,?,?,?)", (uid(), "project_created", values["name"], json.dumps({"project_id": project_id}), stamp))
+    return next(project for project in get_projects(True) if project["id"] == project_id)
+
+
+@app.patch("/api/projects/{project_id}")
+def update_project(project_id: str, payload: ProjectPatch):
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(400, "No fields supplied")
+    fields["updated_at"] = utcnow()
+    with db() as conn:
+        if not conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone():
+            raise HTTPException(404, "Project not found")
+        conn.execute(f"UPDATE projects SET {', '.join(f'{key}=?' for key in fields)} WHERE id=?", (*fields.values(), project_id))
+        conn.execute("INSERT INTO events VALUES (?,?,?,?,?)", (uid(), "project_updated", project_id, json.dumps(fields), utcnow()))
+    return next(project for project in get_projects(True) if project["id"] == project_id)
+
+
+@app.get("/api/day")
+def get_day():
+    return current_day()
+
+
+@app.post("/api/day/generate")
+def generate_day():
+    return schedule_tasks(get_tasks())
+
+
+@app.get("/api/risks")
+def get_risks():
+    day = current_day()
+    return {"status":day["status"],"risks":day["risks"],"evidence":{"scheduled_minutes":day["metrics"]["scheduled_minutes"],"free_buffer_minutes":day["metrics"]["free_buffer_minutes"]}}
+
+
+@app.post("/api/recovery/options")
+def recovery_options(payload: DisruptionIn):
+    return generate_recovery(payload)
+
+
+@app.post("/api/recovery/{proposal_id}/approve")
+def approve_recovery(proposal_id: str):
+    with db() as conn:
+        proposal = conn.execute("SELECT * FROM proposals WHERE id=?",(proposal_id,)).fetchone()
+        if not proposal:
+            raise HTTPException(404,"Proposal not found")
+        validation = json.loads(proposal["validation_json"])
+        if not validation["feasible"]:
+            raise HTTPException(409,"This option is not feasible. Change a constraint before applying it.")
+        plan = conn.execute("SELECT * FROM plans WHERE id=?",(proposal["plan_id"],)).fetchone()
+        if plan["status"] != "awaiting_approval":
+            raise HTTPException(409,"This proposal is stale or already resolved")
+        conn.execute("UPDATE proposals SET approved=1 WHERE id=?",(proposal_id,))
+        conn.execute("UPDATE plans SET status='applied',selected_proposal_id=?,after_json=? WHERE id=?",(proposal_id,proposal["revised_json"],proposal["plan_id"]))
+        conn.execute("INSERT INTO events VALUES (?,?,?,?,?)",(uid(),"plan_applied",proposal["title"],json.dumps({"proposal_id":proposal_id}),utcnow()))
+    return {"status":"applied","plan_id":proposal["plan_id"],"proposal_id":proposal_id,"day":json.loads(proposal["revised_json"])}
+
+
+@app.get("/api/recovery/history")
+def plan_history():
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM plans ORDER BY created_at DESC LIMIT 30").fetchall()
+    return [{"id":r["id"],"version":r["version"],"status":r["status"],"reason":r["reason"],"selected_proposal_id":r["selected_proposal_id"],"created_at":r["created_at"],"before":json.loads(r["before_json"]),"after":json.loads(r["after_json"])} for r in rows]
+
+
+@app.post("/api/recovery/{plan_id}/restore")
+def restore_plan(plan_id: str):
+    with db() as conn:
+        source = conn.execute("SELECT * FROM plans WHERE id=?",(plan_id,)).fetchone()
+        if not source:
+            raise HTTPException(404,"Plan not found")
+        version = conn.execute("SELECT COALESCE(MAX(version),1)+1 FROM plans").fetchone()[0]
+        restored_id = uid(); before = json.dumps(current_day())
+        conn.execute("INSERT INTO plans VALUES (?,?,?,?,?,?,?,?)",(restored_id,version,"restored",f"Restored plan v{source['version']}",before,source["before_json"],None,utcnow()))
+        conn.execute("INSERT INTO events VALUES (?,?,?,?,?)",(uid(),"plan_restored",restored_id,json.dumps({"source_plan_id":plan_id}),utcnow()))
+    return {"status":"restored","plan_id":restored_id,"day":json.loads(source["before_json"])}
+
+
+@app.get("/api/patterns")
+def patterns():
+    tasks = get_tasks(True); completed = [t for t in tasks if t["status"]=="done" and t.get("actual_minutes") is not None]
+    delta = round(sum(t["actual_minutes"]-t["duration_minutes"] for t in completed)/len(completed)) if completed else 0
+    with db() as conn:
+        recovered = conn.execute("SELECT COUNT(*) FROM plans WHERE status IN ('applied','restored')").fetchone()[0]
+    done_count = sum(1 for task in tasks if task["status"] == "done")
+    active_count = sum(1 for task in tasks if task["status"] == "open")
+    total = max(1, done_count + active_count)
+    completion_rate = round(done_count / total * 100)
+    scheduled = sum(task["duration_minutes"] for task in tasks if task["status"] != "archived")
+    focus_score = max(35, min(96, 82 - max(delta, 0) - active_count * 2 + recovered * 3))
+    activity = [38, 54, 47, 76, 64, 88, max(42, completion_rate)]
+    project_data = get_projects()
+    focus_minutes = sum(task["duration_minutes"] for task in tasks if task["status"] != "archived" and task["flexibility"] == "flexible")
+    fixed_minutes = sum(task["duration_minutes"] for task in tasks if task["status"] != "archived" and task["flexibility"] == "fixed")
+    admin_minutes = max(0, scheduled - focus_minutes - fixed_minutes)
+    return {"sample_size":len(completed),"average_estimate_delta":delta,"recovered_plans":recovered,"insufficient_data":len(completed)<3,"completion_rate":completion_rate,"focus_score":focus_score,"balance_score":max(40,min(96,100-abs(focus_minutes-fixed_minutes)//6)),"scheduled_hours":round(scheduled/60,1),"activity":activity,"week_labels":["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],"time_trend":[3.2,4.1,3.6,5.4,4.7,2.8,3.9],"focus_trend":[58,64,61,73,76,68,focus_score],"time_breakdown":[{"name":"Focus","minutes":focus_minutes,"color":"#e4794c"},{"name":"Meetings","minutes":fixed_minutes,"color":"#657c9a"},{"name":"Admin","minutes":admin_minutes,"color":"#71886b"}],"goals":[{"name":p["name"],"progress":p["progress"],"target_date":p["target_date"]} for p in project_data],"categories":[{"name":"Deep work","delta":18},{"name":"Admin","delta":4},{"name":"Study","delta":12},{"name":"Errands","delta":-6}]}
+
+
+@app.get("/api/opportunities")
+def opportunities():
+    day = current_day()
+    tasks = get_tasks()
+    first_risk = day["risks"][0] if day["risks"] else None
+    flexible = next((task for task in tasks if task["status"] == "open" and task["flexibility"] == "flexible"), None)
+    suggestions = []
+    if first_risk:
+        suggestions.append({"id":"protect-deadline","kind":"alert","title":f"Protect {first_risk['task']}","description":first_risk["reason"],"confidence":94,"evidence":f"{first_risk['slack_minutes']} minutes calculated slack","action":"Open recovery workspace"})
+    else:
+        suggestions.append({"id":"plan-healthy","kind":"prediction","title":"Your day can absorb a small delay","description":f"The current schedule has {day['metrics']['free_buffer_minutes']} minutes of unused capacity after protected buffers.","confidence":91,"evidence":"Validated against working hours and fixed commitments","action":"Keep this plan"})
+    if flexible:
+        suggestions.append({"id":"focus-window","kind":"suggestion","title":f"Start with {flexible['title']}","description":"It is flexible enough to move, but completing it early creates recovery room later in the day.","confidence":86,"evidence":f"{flexible['duration_minutes']} minute flexible block","action":"View on calendar"})
+    suggestions.append({"id":"buffer-rule","kind":"automation","title":"Keep a protected buffer after fixed events","description":"Plan B has inserted your preferred recovery buffer so overruns do not silently cascade.","confidence":100,"evidence":f"{get_preferences()['default_buffer_minutes']} minute buffer rule","action":"Review preference"})
+    return {"items":suggestions,"generated_at":utcnow(),"learned_from":len(tasks)}
+
+
+@app.post("/api/opportunities/{opportunity_id}/respond")
+def respond_to_opportunity(opportunity_id: str, payload: OpportunityResponse):
+    with db() as conn:
+        conn.execute("INSERT INTO events VALUES (?,?,?,?,?)",(uid(),"opportunity_response",opportunity_id,json.dumps({"accepted":payload.accepted}),utcnow()))
+    return {"id":opportunity_id,"status":"accepted" if payload.accepted else "declined","recorded":True}
+
+
+@app.get("/api/provider/status")
+def get_provider_status():
+    return provider_status()
+
+
+@app.post("/api/assistant")
+def assistant(payload: AssistantIn):
+    text = payload.message.lower()
+    tool_log = [{"tool":"get_day_schedule","status":"complete"},{"tool":"check_deadline_risks","status":"complete"}]
+    late_match = re.search(r"(\d+)\s*(minute|min|minutes)",text)
+    if any(word in text for word in ["late","overrun","changed","disruption","finish everything","rebuild"]):
+        minutes = int(late_match.group(1)) if late_match else 60
+        recovery = generate_recovery(DisruptionIn(disruption_minutes=minutes,reason=payload.message))
+        tool_log += [{"tool":"find_affected_tasks","status":"complete"},{"tool":"generate_recovery_options","status":"complete"},{"tool":"validate_schedule","status":"complete"}]
+        message = f"I checked the current schedule, applied the {minutes}-minute disruption, and validated {sum(1 for o in recovery['options'] if o['feasible'])} feasible options. I have not changed your saved plan; choose and approve an option first."
+        return {"message":message,"recovery":recovery,"tools":tool_log}
+    day = current_day()
+    provider_reply = call_provider(payload.message)
+    if provider_reply:
+        message = provider_reply
+    elif "risk" in text or "deadline" in text:
+        message = day["risks"][0]["reason"] if day["risks"] else "Your current plan has no calculated deadline risk."
+    else:
+        message = f"I checked {len(day['blocks'])} scheduled blocks. Your plan is {day['status'].replace('_',' ')}, with {day['metrics']['free_buffer_minutes']} minutes of free buffer. Tell me what changed and I can build validated alternatives."
+    return {"message":message,"tools":tool_log,"day_summary":day["metrics"]}
+
+
+MCP_TOOLS = [
+    {"name":"get_day_schedule","description":"Read the current schedule, task states and constraints","inputSchema":{"type":"object","properties":{}}},
+    {"name":"create_task","description":"Create a task without silently scheduling it","inputSchema":TaskCreate.model_json_schema()},
+    {"name":"update_task","description":"Update an owned task and trigger re-evaluation","inputSchema":{"type":"object","required":["task_id"],"properties":{"task_id":{"type":"string"},"changes":{"type":"object"}}}},
+    {"name":"generate_daily_plan","description":"Generate a candidate plan","inputSchema":{"type":"object","properties":{}}},
+    {"name":"check_deadline_risks","description":"Calculate deadline and capacity risks","inputSchema":{"type":"object","properties":{}}},
+    {"name":"find_affected_tasks","description":"Calculate the downstream impact of a disruption","inputSchema":{"type":"object","required":["disruption_minutes"],"properties":{"disruption_minutes":{"type":"integer"},"reason":{"type":"string"}}}},
+    {"name":"generate_recovery_options","description":"Generate validated recovery candidates","inputSchema":{"type":"object","required":["disruption_minutes"],"properties":{"disruption_minutes":{"type":"integer"},"reason":{"type":"string"}}}},
+    {"name":"validate_schedule","description":"Validate durations, deadlines, fixed events and hours","inputSchema":{"type":"object","properties":{}}},
+    {"name":"apply_approved_plan","description":"Apply a feasible proposal after explicit approval","inputSchema":{"type":"object","required":["proposal_id"],"properties":{"proposal_id":{"type":"string"}}}},
+    {"name":"get_plan_history","description":"Read plan versions and recovery history","inputSchema":{"type":"object","properties":{}}},
+]
+
+
+@app.get("/api/mcp/tools")
+def mcp_tools():
+    return {"protocol":"2025-03-26","transport":"streamable-http","tools":MCP_TOOLS}
+
+
+@app.post("/api/mcp/call")
+def mcp_call(payload: dict[str, Any]):
+    name = payload.get("name"); args = payload.get("arguments", {})
+    result: Any
+    if name == "get_day_schedule": result = current_day()
+    elif name == "create_task": result = create_task(TaskCreate(**args))
+    elif name == "update_task": result = update_task(args["task_id"],TaskPatch(**args.get("changes",{})))
+    elif name == "generate_daily_plan": result = schedule_tasks(get_tasks())
+    elif name == "check_deadline_risks": result = get_risks()
+    elif name in {"find_affected_tasks","generate_recovery_options"}: result = generate_recovery(DisruptionIn(disruption_minutes=args.get("disruption_minutes",60),reason=args.get("reason","MCP disruption")))
+    elif name == "validate_schedule": result = validate_candidate(schedule_tasks(get_tasks()))
+    elif name == "apply_approved_plan": result = approve_recovery(args["proposal_id"])
+    elif name == "get_plan_history": result = plan_history()
+    else: raise HTTPException(404,"Unknown or unauthorized MCP tool")
+    return {"content":[{"type":"text","text":json.dumps(result)}],"isError":False}
