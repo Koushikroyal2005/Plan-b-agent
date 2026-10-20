@@ -7,7 +7,9 @@ The default transport is Streamable HTTP on http://localhost:8011/mcp.
 import json
 import os
 
-os.environ.setdefault("PLANB_DB", os.path.join(os.path.dirname(__file__), "planb.sqlite3"))
+os.environ.setdefault(
+    "PLANB_DB", os.path.join(os.path.dirname(__file__), "planb.sqlite3")
+)
 
 from mcp.server.mcpserver import MCPServer
 
@@ -29,7 +31,10 @@ from main import (
 )
 
 init_db()
-mcp = MCPServer("Plan B", instructions="A deterministic schedule recovery service. Read and validate before applying any plan.")
+mcp = MCPServer(
+    "Plan B",
+    instructions="A deterministic schedule recovery service. Read and validate before applying any plan.",
+)
 
 
 @mcp.tool()
@@ -39,9 +44,25 @@ def get_day_schedule() -> str:
 
 
 @mcp.tool()
-def create_task(title: str, duration_minutes: int, priority: str = "medium", flexibility: str = "flexible", deadline: str | None = None, splittable: bool = True) -> str:
+def create_task(
+    title: str,
+    duration_minutes: int,
+    priority: str = "medium",
+    flexibility: str = "flexible",
+    deadline: str | None = None,
+    splittable: bool = True,
+) -> str:
     """Create a task. This does not silently commit a schedule change."""
-    task = api_create_task(TaskCreate(title=title, duration_minutes=duration_minutes, priority=priority, flexibility=flexibility, deadline=deadline, splittable=splittable))
+    task = api_create_task(
+        TaskCreate(
+            title=title,
+            duration_minutes=duration_minutes,
+            priority=priority,
+            flexibility=flexibility,
+            deadline=deadline,
+            splittable=splittable,
+        )
+    )
     return json.dumps(task)
 
 
@@ -64,16 +85,28 @@ def check_deadline_risks() -> str:
 
 
 @mcp.tool()
-def find_affected_tasks(disruption_minutes: int, reason: str = "External disruption") -> str:
+def find_affected_tasks(
+    disruption_minutes: int, reason: str = "External disruption"
+) -> str:
     """Calculate which tasks are affected by a disruption."""
-    result = generate_recovery(DisruptionIn(disruption_minutes=disruption_minutes, reason=reason))
-    return json.dumps({"affected_tasks": result["affected_tasks"], "plan_id": result["plan_id"]})
+    result = generate_recovery(
+        DisruptionIn(disruption_minutes=disruption_minutes, reason=reason)
+    )
+    return json.dumps(
+        {"affected_tasks": result["affected_tasks"], "plan_id": result["plan_id"]}
+    )
 
 
 @mcp.tool()
-def generate_recovery_options(disruption_minutes: int, reason: str = "External disruption") -> str:
+def generate_recovery_options(
+    disruption_minutes: int, reason: str = "External disruption"
+) -> str:
     """Generate alternatives; every option includes deterministic validation."""
-    return json.dumps(generate_recovery(DisruptionIn(disruption_minutes=disruption_minutes, reason=reason)))
+    return json.dumps(
+        generate_recovery(
+            DisruptionIn(disruption_minutes=disruption_minutes, reason=reason)
+        )
+    )
 
 
 @mcp.tool()
@@ -86,7 +119,9 @@ def validate_schedule() -> str:
 def apply_approved_plan(proposal_id: str, user_approved: bool) -> str:
     """Apply a feasible proposal only after explicit user approval."""
     if not user_approved:
-        return json.dumps({"status": "not_applied", "reason": "Explicit approval is required"})
+        return json.dumps(
+            {"status": "not_applied", "reason": "Explicit approval is required"}
+        )
     return json.dumps(approve_recovery(proposal_id))
 
 
@@ -97,4 +132,10 @@ def get_plan_history() -> str:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", host="127.0.0.1", port=int(os.getenv("MCP_PORT", "8011")), stateless_http=True, json_response=True)
+    mcp.run(
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=int(os.getenv("MCP_PORT", "8011")),
+        stateless_http=True,
+        json_response=True,
+    )

@@ -14,10 +14,26 @@ The model may interpret intent, but it cannot bypass deterministic scheduling ru
 
 ## Runtime components
 
-- `frontend/`: React, Vite and Tailwind responsive decision workspace.
-- `backend/main.py`: FastAPI routes, provider adapter, persistence and deterministic planning engine.
+- `frontend/src/core/`: API gateway and navigation configuration.
+- `frontend/src/components/`: reusable application-shell components, including global search and notifications.
+- `frontend/src/features/`: domain-owned UI such as provider/model settings.
+- `frontend/src/hooks/`: browser capability adapters such as speech recognition.
+- `frontend/src/main.jsx`: application composition and product views.
+- `backend/app/config.py`: typed environment configuration and secret boundary.
+- `backend/app/providers/`: replaceable model-provider adapters; NVIDIA NIM is implemented.
+- `backend/main.py`: FastAPI routes, SQLite repositories and deterministic planning domain service.
 - `backend/mcp_server.py`: Python MCP SDK server exposing ten tools over Streamable HTTP.
-- `backend/planb.sqlite3`: tasks, preferences, plan versions, recovery proposals and audit events.
+- `backend/planb.sqlite3`: tasks, projects, preferences, provider selection, plan versions, recovery proposals and audit events.
+
+## Applied design patterns
+
+- **Adapter:** NVIDIA and browser speech are isolated behind small interfaces.
+- **Service layer:** schedule generation, validation and recovery are deterministic functions used by HTTP and MCP transports.
+- **Repository boundary:** SQLite access is server-only and returns normalized domain dictionaries.
+- **Command/approval:** agent write operations produce proposals; a separate explicit command applies them.
+- **Strategy:** each recovery option is a scheduling strategy evaluated by the same validator.
+- **Gateway:** all frontend HTTP calls use one error-normalizing API client.
+- **Feature composition:** shared shell, hooks and domain components have independent test seams.
 
 ## Implemented product areas
 
@@ -44,7 +60,8 @@ The model may interpret intent, but it cannot bypass deterministic scheduling ru
 - History: `GET /api/recovery/history` and `POST /api/recovery/{plan_id}/restore`
 - Settings: `GET/PUT /api/preferences`
 - Patterns: `GET /api/patterns`
-- Provider health: `GET /api/provider/status`
+- Provider health: `GET /api/provider/status` and `POST /api/provider/test`
+- Provider models: `GET /api/provider/models` and `PUT /api/provider/model`
 - MCP inspection: `GET /api/mcp/tools` and `POST /api/mcp/call`
 
 ## Approval and version safety
@@ -53,6 +70,6 @@ Each recovery option stores its own revised timeline and validation evidence. Ap
 
 ## Provider design
 
-`/api/assistant` uses an OpenAI-compatible server adapter when `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` are configured. Without keys it uses the same deterministic tools and honest fallback responses. Browser speech works now; Wispr Flow can be attached through the existing voice/MCP adapter boundary when credentials arrive.
+`/api/assistant` uses NVIDIA NIM's OpenAI-compatible endpoint when `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` are configured. The model selector reads the models enabled for the account, performs a live compatibility test, and persists the selected model in SQLite. `POST /api/provider/test` performs a minimal server-side connectivity check without returning the key. Without a working provider, the product keeps its deterministic planning and recovery behavior. Browser speech works now; Wispr Flow can be attached through the existing voice/MCP adapter boundary when credentials arrive.
 
 No provider key is inserted into the browser bundle or returned in a browser response.
