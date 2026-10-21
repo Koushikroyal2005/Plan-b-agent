@@ -62,7 +62,7 @@ function makeEvents(tasks, day, anchor) {
   const plannedIds = new Set(day?.blocks?.map((block) => block.task_id));
   const planned = (day?.blocks || []).map((block, index) => ({
     ...block,
-    id: block.task_id,
+    id: block.task_id || `plan-${index}`,
     date: keyOf(block.start_iso) || planDate,
     startMinutes: minutesOf(block.start_iso || block.start, 540 + index * 60),
     duration: block.minutes || 60,
@@ -142,7 +142,12 @@ export function CalendarWorkspace({
     });
   };
   const saveEvent = async (event, changes) => {
-    await onPatch(event.task_id || event.id, changes);
+    if (!event.task_id || event.kind === "break") {
+      notify("Breaks follow your settings", "Change break length in Settings.");
+      setSelectedEvent(null);
+      return;
+    }
+    await onPatch(event.task_id, changes);
     setSelectedEvent(null);
     notify(
       "Calendar event saved",
