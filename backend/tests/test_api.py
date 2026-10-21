@@ -119,6 +119,88 @@ def test_agent_and_mcp_use_controlled_tools(client: TestClient):
     assert denied.status_code == 404
 
 
+def test_assistant_navigates_with_typed_ui_command(client: TestClient):
+    response = client.post(
+        "/api/assistant",
+        json={"utterance": "Move to my settings page", "session_id": "navigation-test", "channel": "voice"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "completed"
+    assert body["ui_commands"] == [{"type": "navigate", "target": "settings"}]
+    assert body["requires_confirmation"] is False
+
+
+def test_assistant_collects_task_slots_and_confirms_before_write(client: TestClient):
+    session = "task-dialogue-test"
+    first = client.post("/api/assistant", json={"message": "Create a task", "session_id": session})
+    assert first.status_code == 200
+    assert first.json()["state"] == "asking"
+    assert first.json()["pending_action"]["intent"] == "task.create"
+
+    second = client.post("/api/assistant", json={"message": "Prepare the demo", "session_id": session})
+    assert second.json()["state"] == "asking"
+    assert "How long" in second.json()["say"]
+
+    third = client.post("/api/assistant", json={"message": "90 minutes tomorrow at 10 am", "session_id": session})
+    assert third.json()["state"] == "confirming"
+    assert third.json()["requires_confirmation"] is True
+    assert not any(task["title"] == "Prepare the demo" for task in client.get("/api/tasks").json())
+
+    final = client.post("/api/assistant", json={"message": "yes", "session_id": session})
+    assert final.json()["state"] == "completed"
+    assert any(item["tool"] == "create_task" for item in final.json()["tools"])
+    assert any(task["title"] == "Prepare the demo" for task in client.get("/api/tasks").json())
+
+
+def test_assistant_can_cancel_pending_write(client: TestClient):
+    session = "cancel-test"
+    client.post("/api/assistant", json={"message": "Create task called Dangerous duplicate for 20 minutes", "session_id": session})
+    cancelled = client.post("/api/assistant", json={"message": "cancel", "session_id": session})
+    assert cancelled.json()["state"] == "completed"
+    assert "did not change" in cancelled.json()["say"]
+    assert not any(task["title"] == "Dangerous duplicate" for task in client.get("/api/tasks").json())
+
+
+def test_assistant_uses_structured_model_decision_not_phrase_matching(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(
+        main,
+        "call_provider_structured",
+        lambda system, prompt: {
+            "intent": "navigate",
+            "confidence": 0.97,
+            "slots": {"target": "calendar"},
+            "response": None,
+            "reasoning_summary": "The user wants the calendar workspace",
+        },
+    )
+    response = client.post(
+        "/api/assistant",
+        json={"message": "Beam me into the time grid", "session_id": "model-routing"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ui_commands"] == [{"type": "navigate", "target": "calendar"}]
+    assert response.json()["agent"] == {
+        "role": "planner",
+        "intent": "navigate",
+        "confidence": 0.97,
+        "source": "model",
+        "max_steps": 6,
+    }
+
+
+def test_assistant_risk_tool_handles_grounded_api_shape(client: TestClient):
+    response = client.post(
+        "/api/assistant", json={"message": "What is at risk?", "session_id": "risk-test"}
+    )
+    assert response.status_code == 200
+    assert response.json()["tools"] == [
+        {"tool": "check_deadline_risks", "status": "complete"}
+    ]
+
+
 def test_model_catalog_and_persistent_selection(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         main.settings.__class__,

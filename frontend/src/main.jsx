@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -42,6 +42,7 @@ import { navigation } from "./core/navigation";
 import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
 import { ProviderModelPicker } from "./features/settings/ProviderModelPicker";
 import { AppHeader } from "./components/AppHeader";
+import { VoiceAssistant } from "./components/VoiceAssistant";
 import { CalendarWorkspace } from "./features/calendar/CalendarWorkspace";
 import "./styles.css";
 import "./features.css";
@@ -72,6 +73,16 @@ function App() {
   const [projectModal, setProjectModal] = useState(null);
   const [showSetup, setShowSetup] = useState(false);
   const [toast, setToast] = useState(null);
+  const [assistantTurn, setAssistantTurn] = useState(null);
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const previousView = useRef("dashboard");
+  const sessionId = useMemo(() => {
+    const existing = window.localStorage.getItem("planb-assistant-session");
+    if (existing) return existing;
+    const created = window.crypto?.randomUUID?.() || `session-${Date.now()}`;
+    window.localStorage.setItem("planb-assistant-session", created);
+    return created;
+  }, []);
 
   const notify = (title, body) => {
     setToast({ title, body });
@@ -139,13 +150,41 @@ function App() {
       notify("Could not build recovery", error.message);
     }
   };
-  const sendMessage = async (text) => {
+  const runUiCommands = (commands = []) => {
+    commands.forEach((command) => {
+      if (command.type === "navigate" && navigation.some((item) => item.id === command.target)) {
+        previousView.current = view;
+        setView(command.target);
+      } else if (command.type === "back") {
+        setView(previousView.current || "dashboard");
+      } else if (command.type === "open_modal" && command.target === "task") {
+        setTaskModal(command.payload || {});
+      } else if (command.type === "open_modal" && command.target === "project") {
+        setProjectModal(command.payload || {});
+      } else if (command.type === "close_modal") {
+        setTaskModal(null);
+        setProjectModal(null);
+      } else if (command.type === "show_help") {
+        setView("assistant");
+      }
+    });
+  };
+  const sendMessage = async (text, channel = "text") => {
     if (!text.trim()) return;
     setMessages((items) => [...items, { role: "user", text }]);
+    setAssistantBusy(true);
     try {
       const result = await api("/assistant", {
         method: "POST",
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({
+          message: text,
+          utterance: text,
+          session_id: sessionId,
+          channel,
+          current_view: view,
+          idempotency_key: window.crypto?.randomUUID?.() || `${sessionId}-${Date.now()}`,
+          client_capabilities: ["navigate", "modal", "highlight", "speech-synthesis"],
+        }),
       });
       setMessages((items) => [
         ...items,
@@ -153,11 +192,19 @@ function App() {
       ]);
       setActivity(result.tools || []);
       if (result.recovery) setRecovery(result.recovery);
+      setAssistantTurn({ ...result, channel });
+      runUiCommands(result.ui_commands);
+      if (result.tools?.some((item) => ["create_task", "create_project", "update_task"].includes(item.tool))) {
+        await refresh();
+      }
     } catch (error) {
       setMessages((items) => [
         ...items,
         { role: "assistant", text: `Planning service error: ${error.message}` },
       ]);
+      setAssistantTurn({ say: `Planning service error: ${error.message}`, state: "failed", channel });
+    } finally {
+      setAssistantBusy(false);
     }
   };
   const patchTask = async (taskId, changes) => {
@@ -306,6 +353,7 @@ function App() {
         activity={activity}
         sendMessage={sendMessage}
         preferences={data.preferences}
+        currentView={view}
         notify={notify}
       />
     ),
@@ -401,6 +449,14 @@ function App() {
         />
       )}
       {toast && <Toast {...toast} />}
+      <VoiceAssistant
+        turn={assistantTurn}
+        busy={assistantBusy}
+        preferences={data.preferences}
+        onSend={sendMessage}
+        onOpenChat={() => setView("assistant")}
+        onDismiss={() => setAssistantTurn(null)}
+      />
     </div>
   );
 }

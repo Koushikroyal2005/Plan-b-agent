@@ -73,3 +73,27 @@ Each recovery option stores its own revised timeline and validation evidence. Ap
 `/api/assistant` uses NVIDIA NIM's OpenAI-compatible endpoint when `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` are configured. The model selector reads the models enabled for the account, performs a live compatibility test, and persists the selected model in SQLite. `POST /api/provider/test` performs a minimal server-side connectivity check without returning the key. Without a working provider, the product keeps its deterministic planning and recovery behavior. Browser speech works now; Wispr Flow can be attached through the existing voice/MCP adapter boundary when credentials arrive.
 
 No provider key is inserted into the browser bundle or returned in a browser response.
+# Voice agent runtime
+
+Plan B uses a bounded, model-first agent runtime inspired by the useful control patterns in PentAGI while remaining focused on personal planning.
+
+1. The planner converts natural language into a validated `AgentDecision`.
+2. The orchestrator resolves that decision against the current conversation state.
+3. A typed `ToolRegistry` exposes only approved planning operations.
+4. Read actions run immediately; writes create a pending action and require confirmation.
+5. Tool results, assistant turns and pending state are persisted in SQLite.
+6. Every client turn carries an idempotency key so retries cannot duplicate writes.
+7. Invalid model JSON or provider outages activate a deterministic fallback router.
+
+The runtime deliberately does not send the full task or project database to the model. The model sees the utterance, current page, pending action and tool schemas. Exact records are matched and executed inside the server.
+
+The model interprets intent; deterministic application services remain the source of truth for scheduling, validation, recovery and writes.
+
+Key modules:
+
+- `app/agents/contracts.py` — structured decisions and tool arguments.
+- `app/agents/planner.py` — NVIDIA structured planning plus fallback/reflection.
+- `app/agents/tools.py` — allowlisted tool registry and schema validation.
+- `app/assistant_service.py` — dialogue state, confirmation policy and execution.
+- `app/providers/nvidia.py` — replaceable NVIDIA NIM adapter.
+

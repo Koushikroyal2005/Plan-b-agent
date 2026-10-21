@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.assistant_service import AssistantService
 from app.providers import NVIDIAProvider, ProviderError
 
 DB_PATH = settings.database_path
@@ -35,6 +36,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -107,7 +109,14 @@ class DisruptionIn(BaseModel):
 
 
 class AssistantIn(BaseModel):
-    message: str = Field(min_length=1, max_length=2000)
+    message: str | None = Field(default=None, min_length=1, max_length=2000)
+    utterance: str | None = Field(default=None, min_length=1, max_length=2000)
+    session_id: str = Field(default="default", min_length=1, max_length=120)
+    channel: Literal["voice", "text"] = "text"
+    current_view: str | None = None
+    context: dict[str, Any] = {}
+    client_capabilities: list[str] = []
+    idempotency_key: str | None = None
 
 
 class OpportunityResponse(BaseModel):
@@ -261,6 +270,19 @@ def init_db() -> None:
             );
             CREATE TABLE IF NOT EXISTS app_settings (
               key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS assistant_sessions (
+              id TEXT PRIMARY KEY, state_json TEXT NOT NULL DEFAULT '{}',
+              last_response_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS assistant_turns (
+              id TEXT PRIMARY KEY, session_id TEXT NOT NULL, utterance TEXT NOT NULL,
+              response_json TEXT NOT NULL, created_at TEXT NOT NULL,
+              FOREIGN KEY(session_id) REFERENCES assistant_sessions(id)
+            );
+            CREATE TABLE IF NOT EXISTS assistant_idempotency (
+              key TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+              response_json TEXT NOT NULL, created_at TEXT NOT NULL
             );
             """
         )
@@ -936,6 +958,17 @@ def call_provider(message: str, model: str | None = None) -> str | None:
         return None
 
 
+def call_provider_structured(system: str, prompt: str) -> dict[str, Any] | None:
+    if not settings.provider_configured:
+        return None
+    try:
+        client = provider_client()
+        structured = getattr(client, "structured", None)
+        return structured(system, prompt) if structured else None
+    except (ProviderError, AttributeError, TypeError):
+        return None
+
+
 @app.get("/api/health")
 def health():
     return {
@@ -1540,47 +1573,27 @@ def test_provider():
 
 @app.post("/api/assistant")
 def assistant(payload: AssistantIn):
-    text = payload.message.lower()
-    tool_log = [
-        {"tool": "get_day_schedule", "status": "complete"},
-        {"tool": "check_deadline_risks", "status": "complete"},
-    ]
-    late_match = re.search(r"(\d+)\s*(minute|min|minutes)", text)
-    if any(
-        word in text
-        for word in [
-            "late",
-            "overrun",
-            "changed",
-            "disruption",
-            "finish everything",
-            "rebuild",
-        ]
-    ):
-        minutes = int(late_match.group(1)) if late_match else 60
-        recovery = generate_recovery(
-            DisruptionIn(disruption_minutes=minutes, reason=payload.message)
-        )
-        tool_log += [
-            {"tool": "find_affected_tasks", "status": "complete"},
-            {"tool": "generate_recovery_options", "status": "complete"},
-            {"tool": "validate_schedule", "status": "complete"},
-        ]
-        message = f"I checked the current schedule, applied the {minutes}-minute disruption, and validated {sum(1 for o in recovery['options'] if o['feasible'])} feasible options. I have not changed your saved plan; choose and approve an option first."
-        return {"message": message, "recovery": recovery, "tools": tool_log}
-    day = current_day()
-    provider_reply = call_provider(payload.message)
-    if provider_reply:
-        message = provider_reply
-    elif "risk" in text or "deadline" in text:
-        message = (
-            day["risks"][0]["reason"]
-            if day["risks"]
-            else "Your current plan has no calculated deadline risk."
-        )
-    else:
-        message = f"I checked {len(day['blocks'])} scheduled blocks. Your plan is {day['status'].replace('_',' ')}, with {day['metrics']['free_buffer_minutes']} minutes of free buffer. Tell me what changed and I can build validated alternatives."
-    return {"message": message, "tools": tool_log, "day_summary": day["metrics"]}
+    if not (payload.message or payload.utterance):
+        raise HTTPException(422, "message or utterance is required")
+
+    service = AssistantService(
+        db=db,
+        provider=call_provider,
+        structured_provider=call_provider_structured,
+        tools={
+            "create_task": lambda values: create_task(TaskCreate(**values)),
+            "create_project": lambda values: create_project(ProjectCreate(**values)),
+            "complete_task": lambda task_id: update_task(task_id, TaskPatch(status="done")),
+            "list_tasks": get_tasks,
+            "list_projects": get_projects,
+            "day": current_day,
+            "risks": get_risks,
+            "recovery": lambda minutes, reason: generate_recovery(
+                DisruptionIn(disruption_minutes=minutes, reason=reason)
+            ),
+        },
+    )
+    return service.turn(payload.model_dump())
 
 
 MCP_TOOLS = [
