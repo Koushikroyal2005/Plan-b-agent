@@ -57,6 +57,7 @@ function App() {
     provider: null,
     patterns: null,
     opportunities: [],
+    activityFeed: [],
   });
   const [recovery, setRecovery] = useState(null);
   const [messages, setMessages] = useState([
@@ -68,7 +69,7 @@ function App() {
   const [activity, setActivity] = useState([]);
   const [loading, setLoading] = useState(true);
   const [taskModal, setTaskModal] = useState(null);
-  const [projectModal, setProjectModal] = useState(false);
+  const [projectModal, setProjectModal] = useState(null);
   const [showSetup, setShowSetup] = useState(false);
   const [toast, setToast] = useState(null);
 
@@ -88,6 +89,7 @@ function App() {
         provider,
         patterns,
         opportunityData,
+        activityFeed,
       ] = await Promise.all([
         api("/tasks"),
         api("/projects"),
@@ -97,6 +99,7 @@ function App() {
         api("/provider/status"),
         api("/patterns"),
         api("/opportunities"),
+        api("/activity"),
       ]);
       setData({
         tasks,
@@ -107,6 +110,7 @@ function App() {
         provider,
         patterns,
         opportunities: opportunityData.items,
+        activityFeed,
       });
       if (!preferences.onboarding_complete) setShowSetup(true);
     } catch (error) {
@@ -218,6 +222,8 @@ function App() {
       }));
       if (accepted && item.id === "protect-deadline") createRecovery();
       else if (accepted && item.id === "focus-window") setView("calendar");
+      else if (accepted && item.id === "buffer-rule") setView("settings");
+      else if (accepted && item.id === "plan-healthy") setView("day");
       notify(
         accepted ? "Suggestion accepted" : "Suggestion dismissed",
         accepted ? item.action : "Plan B will remember this response.",
@@ -239,6 +245,10 @@ function App() {
         provider={data.provider}
         openChat={() => setView("assistant")}
         openCalendar={() => setView("calendar")}
+        openTasks={() => setView("tasks")}
+        onAdd={() => setTaskModal({})}
+        displayName={data.preferences?.display_name || "there"}
+        activityFeed={data.activityFeed}
       />
     ),
     day: (
@@ -250,6 +260,7 @@ function App() {
         onRecovery={createRecovery}
         onRefresh={refresh}
         navigate={setView}
+        displayName={data.preferences?.display_name || "there"}
       />
     ),
     calendar: (
@@ -268,9 +279,25 @@ function App() {
         tasks={data.tasks}
         projects={data.projects}
         onAdd={() => setTaskModal({})}
-        onAddProject={() => setProjectModal(true)}
+        onAddProject={() => setProjectModal({})}
         onEdit={(task) => setTaskModal(task)}
         onPatch={patchTask}
+        onEditProject={(project) => setProjectModal(project)}
+        onPatchProject={async (projectId, changes) => {
+          try {
+            await api(`/projects/${projectId}`, {
+              method: "PATCH",
+              body: JSON.stringify(changes),
+            });
+            await refresh();
+            notify(
+              changes.status === "archived" ? "Project archived" : "Project updated",
+              "Project changes are saved.",
+            );
+          } catch (error) {
+            notify("Project update failed", error.message);
+          }
+        }}
       />
     ),
     assistant: (
@@ -342,20 +369,23 @@ function App() {
             refresh();
             notify(
               "Task saved",
-              "The plan was recalculated from the updated constraint.",
+              "The schedule now uses your latest task details.",
             );
           }}
         />
       )}
       {projectModal && (
         <ProjectModal
-          close={() => setProjectModal(false)}
-          onSaved={() => {
-            setProjectModal(false);
+          project={projectModal.id ? projectModal : null}
+          close={() => setProjectModal(null)}
+          onSaved={(edited) => {
+            setProjectModal(null);
             refresh();
             notify(
-              "Project added",
-              "You can now assign tasks and track its progress.",
+              edited ? "Project updated" : "Project added",
+              edited
+                ? "The project details were saved."
+                : "You can now assign tasks and track its progress.",
             );
           }}
         />
@@ -670,14 +700,32 @@ function DashboardView({
   provider,
   openChat,
   openCalendar,
+  openTasks,
+  onAdd,
+  displayName,
+  activityFeed = [],
 }) {
   const [input, setInput] = useState("");
+  const [showAllActivity, setShowAllActivity] = useState(false);
+  const { supported, listening, toggle } = useSpeechRecognition({
+    language: "en-IN",
+    onTranscript: (transcript) => sendMessage(transcript),
+  });
   const open = tasks.filter((task) => task.status === "open");
   const done = tasks.filter((task) => task.status === "done");
   const focusMinutes =
     day?.blocks
       ?.filter((block) => block.kind === "focus" || block.kind === "risk")
       .reduce((sum, block) => sum + block.minutes, 0) || 0;
+  const planDate = day?.date
+    ? new Date(`${day.date}T12:00:00`).toLocaleDateString([], {
+        month: "long",
+        day: "numeric",
+      })
+    : "today";
+  const visibleActivity = showAllActivity
+    ? activityFeed
+    : activityFeed.slice(0, 3);
   const submit = () => {
     if (!input.trim()) return;
     sendMessage(input);
@@ -693,7 +741,7 @@ function DashboardView({
     <View id="dashboard">
       <div className="screen4-head">
         <div>
-          <h1>Good morning, Koushik</h1>
+          <h1>Good morning, {displayName}</h1>
           <p>Your day, projects and planning assistant in one place.</p>
         </div>
         <div className="provider-live">
@@ -741,7 +789,11 @@ function DashboardView({
                 <Sparkles size={16} />
               </span>
               <b>Plan B Assistant</b>
-              <small>NVIDIA-powered · tool grounded</small>
+              <small>
+                {provider?.configured
+                  ? "Model connected · approval required"
+                  : "Deterministic planner · approval required"}
+              </small>
             </div>
             <button onClick={openChat} title="Open full chat">
               <ArrowRight size={16} />
@@ -776,7 +828,7 @@ function DashboardView({
             ))}
           </div>
           <div className="dashboard-composer">
-            <button>
+            <button type="button" onClick={onAdd} title="Add task">
               <Plus size={18} />
             </button>
             <input
@@ -785,7 +837,21 @@ function DashboardView({
               onKeyDown={(event) => event.key === "Enter" && submit()}
               placeholder="Ask Plan B anything about your schedule…"
             />
-            <button className="composer-mic">
+            <button
+              type="button"
+              className="composer-mic"
+              title={
+                supported
+                  ? listening
+                    ? "Stop listening"
+                    : "Speak a message"
+                  : "Voice input is not available in this browser"
+              }
+              onClick={() => {
+                if (!supported) return;
+                toggle();
+              }}
+            >
               <Mic size={17} />
             </button>
             <button className="composer-send" onClick={submit}>
@@ -800,7 +866,7 @@ function DashboardView({
                 <b>
                   <CalendarDays size={15} /> Calendar
                 </b>
-                <small>Today · October 19</small>
+                <small>Today · {planDate}</small>
               </div>
               <button onClick={openCalendar}>
                 View calendar <ChevronRight size={13} />
@@ -825,7 +891,9 @@ function DashboardView({
               <b>
                 <FolderKanban size={15} /> Project progress
               </b>
-              <button>View all</button>
+              <button type="button" onClick={openTasks}>
+                View all
+              </button>
             </div>
             {projects.slice(0, 3).map((project) => (
               <div className="rail-project" key={project.id}>
@@ -849,18 +917,29 @@ function DashboardView({
               <b>
                 <Activity size={15} /> Activity feed
               </b>
-              <button>View all</button>
+              <button
+                type="button"
+                onClick={() => setShowAllActivity((current) => !current)}
+              >
+                {showAllActivity ? "Show less" : "View all"}
+              </button>
             </div>
-            <Feed
-              icon={<Check size={13} />}
-              title={`${done.length} tasks completed`}
-              detail="Completion history updated"
-            />
-            <Feed
-              icon={<ShieldCheck size={13} />}
-              title="Plan validated"
-              detail={`${day?.metrics?.free_buffer_minutes || 0} minutes free buffer`}
-            />
+            {visibleActivity.length ? (
+              visibleActivity.map((item) => (
+                <Feed
+                  key={item.id}
+                  icon={<Activity size={13} />}
+                  title={item.type.replaceAll("_", " ")}
+                  detail={item.detail}
+                />
+              ))
+            ) : (
+              <Feed
+                icon={<Activity size={13} />}
+                title="No activity yet"
+                detail="Task, project and recovery actions will appear here"
+              />
+            )}
           </div>
           <div className="panel rail-suggestion">
             <Sparkles size={18} />
@@ -910,6 +989,7 @@ function DayView({
   onRecovery,
   onRefresh,
   navigate,
+  displayName,
 }) {
   const [filter, setFilter] = useState("all");
   if (!day) return null;
@@ -918,17 +998,30 @@ function DayView({
   const filtered = opportunities.filter(
     (item) => filter === "all" || item.kind === filter,
   );
+  const headingDate = day.date
+    ? new Date(`${day.date}T12:00:00`)
+        .toLocaleDateString([], {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+        })
+        .toUpperCase()
+    : "TODAY";
   return (
     <View id="day">
       <div className="hero">
         <div>
-          <Eyebrow>MONDAY · OCTOBER 19, 2026</Eyebrow>
+          <Eyebrow>{headingDate}</Eyebrow>
           <h1>
-            Good morning, Koushik <span>✦</span>
+            Good morning, {displayName} <span>✦</span>
           </h1>
           <p>
-            Your plan is calculated from real durations, deadlines, fixed events
-            and buffers.
+            {day.plan_stale
+              ? "Your tasks or settings changed after the last approved plan, so this timeline was rebuilt."
+              : day.schedule_source === "approved_plan"
+                ? "This timeline is the recovery plan you approved."
+                : "Your plan is calculated from real durations, deadlines, fixed events and buffers."}
           </p>
         </div>
         <div className="hero-buttons">
@@ -1382,7 +1475,16 @@ function EventDetail({ block, close }) {
   );
 }
 
-function TasksView({ tasks, projects, onAdd, onAddProject, onEdit, onPatch }) {
+function TasksView({
+  tasks,
+  projects,
+  onAdd,
+  onAddProject,
+  onEdit,
+  onPatch,
+  onEditProject,
+  onPatchProject,
+}) {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("open");
   const [sort, setSort] = useState("deadline");
@@ -1492,7 +1594,25 @@ function TasksView({ tasks, projects, onAdd, onAddProject, onEdit, onPatch }) {
                   · {project.planned_minutes} planned minutes
                 </small>
               </div>
-              <strong>{project.progress}%</strong>
+              <div className="hero-buttons">
+                <button
+                  type="button"
+                  onClick={() => onEditProject(project)}
+                  title="Edit project"
+                >
+                  <Pencil size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onPatchProject(project.id, { status: "archived" })
+                  }
+                  title="Archive project"
+                >
+                  <Archive size={14} />
+                </button>
+                <strong>{project.progress}%</strong>
+              </div>
             </div>
           ))}
         </div>
@@ -1967,7 +2087,13 @@ function HistoryList({ history, restore }) {
   );
 }
 
-function PatternsView({ data }) {
+function PatternsView({ data: initialData }) {
+  const [data, setData] = useState(initialData);
+  const [days, setDays] = useState(initialData?.range_days || 7);
+  useEffect(() => {
+    setData(initialData);
+    setDays(initialData?.range_days || 7);
+  }, [initialData]);
   const activity = data?.activity || [];
   const labels = data?.week_labels || [];
   const timeTrend = data?.time_trend || [];
@@ -1990,8 +2116,14 @@ function PatternsView({ data }) {
             work breakdown.
           </p>
         </div>
-        <Button>
-          <TrendingUp size={14} /> Last 7 days
+        <Button
+          onClick={async () => {
+            const next = days === 7 ? 30 : 7;
+            setDays(next);
+            setData(await api(`/patterns?days=${next}`));
+          }}
+        >
+          <TrendingUp size={14} /> Last {days} days
         </Button>
       </div>
       <div className="analytics-metrics">
@@ -2025,7 +2157,10 @@ function PatternsView({ data }) {
         <div className="panel trend-card wide-card">
           <PanelHeading
             title="Time trends"
-            sub="Planned hours across the last seven days"
+            sub={
+              data?.history_note ||
+              "Recorded completion hours across the selected range"
+            }
           />
           <svg
             className="line-chart"
@@ -2035,8 +2170,8 @@ function PatternsView({ data }) {
             <polyline points={points(timeTrend, 7)} />
           </svg>
           <div className="chart-labels">
-            {labels.map((label) => (
-              <span key={label}>{label}</span>
+            {labels.map((label, index) => (
+              <span key={`${label}-${index}`}>{label}</span>
             ))}
           </div>
         </div>
@@ -2076,7 +2211,7 @@ function PatternsView({ data }) {
           <PanelHeading title="Activity" sub="Relative productive load" />
           <div className="chart-bars compact">
             {activity.map((value, index) => (
-              <div key={labels[index]}>
+              <div key={`${labels[index]}-${index}`}>
                 <i style={{ height: `${value}%` }} />
                 <small>{labels[index]}</small>
               </div>
@@ -2096,8 +2231,8 @@ function PatternsView({ data }) {
             <polyline points={points(focusTrend)} />
           </svg>
           <div className="chart-labels">
-            {labels.map((label) => (
-              <span key={label}>{label}</span>
+            {labels.map((label, index) => (
+              <span key={`focus-${label}-${index}`}>{label}</span>
             ))}
           </div>
         </div>
@@ -2141,20 +2276,26 @@ function PatternsView({ data }) {
                 : "Early benchmark"
             }
           />
-          {data?.categories?.map((item) => (
-            <div className="bar" key={item.name}>
-              <span>{item.name}</span>
-              <i
-                style={{
-                  width: `${Math.min(90, 35 + Math.abs(item.delta) * 2)}%`,
-                }}
-              />
-              <b>
-                {item.delta > 0 ? "+" : ""}
-                {item.delta}m
-              </b>
-            </div>
-          ))}
+          {data?.categories?.length ? (
+            data.categories.map((item) => (
+              <div className="bar" key={item.name}>
+                <span>{item.name}</span>
+                <i
+                  style={{
+                    width: `${Math.min(90, 35 + Math.abs(item.delta) * 2)}%`,
+                  }}
+                />
+                <b>
+                  {item.delta > 0 ? "+" : ""}
+                  {item.delta}m
+                </b>
+              </div>
+            ))
+          ) : (
+            <p className="muted">
+              Complete tasks with actual minutes to see estimate accuracy.
+            </p>
+          )}
         </div>
       </div>
     </View>
@@ -2465,7 +2606,7 @@ function SettingsView({
             />
             <Toggle
               text="Voice replies"
-              detail="Read approved summaries aloud"
+              detail="Saved for later. Spoken replies are not available yet."
               active={form.voice_output}
               onChange={(value) => field("voice_output", value)}
             />
@@ -2489,8 +2630,8 @@ function SettingsView({
             <Connection
               icon={<CalendarDays size={15} />}
               title="Calendar adapter"
-              detail="Local planning calendar"
-              state="Connected"
+              detail="Local planning calendar. Google and Outlook are not connected."
+              state="Local only"
             />
             <Connection
               icon={<Bot size={15} />}
@@ -2699,20 +2840,21 @@ function TaskModal({ task, projects, close, onSaved }) {
   );
 }
 
-function ProjectModal({ close, onSaved }) {
+function ProjectModal({ project, close, onSaved }) {
+  const editing = Boolean(project?.id);
   const [form, setForm] = useState({
-    name: "",
-    description: "",
-    color: "#e4794c",
-    target_date: "",
+    name: project?.name || "",
+    description: project?.description || "",
+    color: project?.color || "#e4794c",
+    target_date: project?.target_date || "",
   });
   const submit = async (event) => {
     event.preventDefault();
-    await api("/projects", {
-      method: "POST",
+    await api(editing ? `/projects/${project.id}` : "/projects", {
+      method: editing ? "PATCH" : "POST",
       body: JSON.stringify({ ...form, target_date: form.target_date || null }),
     });
-    onSaved();
+    onSaved(editing);
   };
   return (
     <div className="modal-backdrop">
@@ -2720,8 +2862,8 @@ function ProjectModal({ close, onSaved }) {
         <button type="button" className="close" onClick={close}>
           <X size={18} />
         </button>
-        <Eyebrow>NEW WORKSPACE</Eyebrow>
-        <h2>Add a project</h2>
+        <Eyebrow>{editing ? "EDIT WORKSPACE" : "NEW WORKSPACE"}</Eyebrow>
+        <h2>{editing ? "Edit project" : "Add a project"}</h2>
         <p>Projects group related tasks and power progress tracking.</p>
         <label>
           Project name
@@ -2766,7 +2908,7 @@ function ProjectModal({ close, onSaved }) {
           </label>
         </div>
         <Button primary type="submit" className="wide">
-          Create project <ArrowRight size={14} />
+          {editing ? "Save project" : "Create project"} <ArrowRight size={14} />
         </Button>
       </form>
     </div>

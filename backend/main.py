@@ -17,7 +17,7 @@ from app.config import settings
 from app.providers import NVIDIAProvider, ProviderError
 
 DB_PATH = settings.database_path
-TODAY = date(2026, 10, 19)
+DEMO_ANCHOR = date(2026, 10, 19)
 
 
 @asynccontextmanager
@@ -156,6 +156,49 @@ def clock(value: datetime) -> str:
     return f"{hour}:{value.minute:02d} {'AM' if value.hour < 12 else 'PM'}"
 
 
+def planning_day() -> date:
+    return date.today()
+
+
+def align_demo_dates(conn: sqlite3.Connection) -> None:
+    """Move the original demo dates onto the current day without touching edited dates."""
+    today = planning_day()
+    if today == DEMO_ANCHOR:
+        return
+    demo_tasks = {
+        "Prepare project report": {"deadline": "T12:00"},
+        "Parcel collection": {"deadline": "T17:00", "fixed_start": "T16:15"},
+        "Team meeting": {"fixed_start": "T14:00"},
+        "Finish assignment": {"deadline": "T18:00"},
+    }
+    for title, fields in demo_tasks.items():
+        row = conn.execute(
+            "SELECT deadline, fixed_start FROM tasks WHERE title=?", (title,)
+        ).fetchone()
+        if not row:
+            continue
+        updates: dict[str, str] = {}
+        for column, suffix in fields.items():
+            current = row[column] or ""
+            if current.startswith(DEMO_ANCHOR.isoformat()):
+                updates[column] = f"{today.isoformat()}{suffix}"
+        if updates:
+            assignments = ", ".join(f"{column}=?" for column in updates)
+            conn.execute(
+                f"UPDATE tasks SET {assignments}, updated_at=? WHERE title=?",
+                (*updates.values(), utcnow(), title),
+            )
+    project_shifts = {
+        "Product launch": (4, "2026-10-23"),
+        "Study sprint": (2, "2026-10-21"),
+    }
+    for name, (offset, original) in project_shifts.items():
+        conn.execute(
+            "UPDATE projects SET target_date=? WHERE name=? AND target_date=?",
+            ((today + timedelta(days=offset)).isoformat(), name, original),
+        )
+
+
 def init_db() -> None:
     with db() as conn:
         existing = conn.execute(
@@ -240,14 +283,16 @@ def init_db() -> None:
             "INSERT OR IGNORE INTO app_settings VALUES (?,?,?)",
             ("active_llm_model", settings.llm_model, utcnow()),
         )
+        align_demo_dates(conn)
         if os.getenv("PLANB_SEED", "1") == "1":
+            today_iso = planning_day().isoformat()
             seed = [
                 (
                     "Prepare project report",
                     "Finalize the project narrative and evidence.",
                     60,
                     None,
-                    "2026-10-19T12:00",
+                    f"{today_iso}T12:00",
                     None,
                     "high",
                     "flexible",
@@ -271,8 +316,8 @@ def init_db() -> None:
                     "Collect parcel before the office closes.",
                     30,
                     None,
-                    "2026-10-19T17:00",
-                    "2026-10-19T16:15",
+                    f"{today_iso}T17:00",
+                    f"{today_iso}T16:15",
                     "medium",
                     "fixed",
                     0,
@@ -284,7 +329,7 @@ def init_db() -> None:
                     60,
                     None,
                     None,
-                    "2026-10-19T14:00",
+                    f"{today_iso}T14:00",
                     "high",
                     "fixed",
                     0,
@@ -295,7 +340,7 @@ def init_db() -> None:
                     "Complete and upload the final assignment.",
                     120,
                     None,
-                    "2026-10-19T18:00",
+                    f"{today_iso}T18:00",
                     None,
                     "high",
                     "flexible",
@@ -347,13 +392,13 @@ def init_db() -> None:
                 "Product launch",
                 "Report, launch and team delivery work",
                 "#e4794c",
-                "2026-10-23",
+                (planning_day() + timedelta(days=4)).isoformat(),
             ),
             (
                 "Study sprint",
                 "Lectures and assignment completion",
                 "#657c9a",
-                "2026-10-21",
+                (planning_day() + timedelta(days=2)).isoformat(),
             ),
             ("Personal admin", "Errands and personal commitments", "#71886b", None),
         ]
@@ -451,16 +496,31 @@ def schedule_tasks(
     deferred_ids: set[str] | None = None,
     day_end_extension: int = 0,
     disruption: dict[str, Any] | None = None,
+    on: date | None = None,
 ) -> dict[str, Any]:
     prefs = get_preferences()
-    start = datetime.combine(TODAY, parse_clock(prefs["day_start"], time(9)))
+    day = on or planning_day()
+    start = datetime.combine(day, parse_clock(prefs["day_start"], time(9)))
     day_end = datetime.combine(
-        TODAY, parse_clock(prefs["day_end"], time(21))
+        day, parse_clock(prefs["day_end"], time(21))
     ) + timedelta(minutes=day_end_extension)
-    buffer_minutes = prefs["default_buffer_minutes"]
+    style_adjustment = {"realistic": 5, "balanced": 0, "ambitious": -5}.get(
+        prefs.get("planning_style"), 0
+    )
+    buffer_minutes = max(0, int(prefs["default_buffer_minutes"]) + style_adjustment)
+    break_minutes = int(prefs.get("break_minutes") or 0)
     deferred_ids = deferred_ids or set()
+
+    def scheduled_on_another_day(task: dict[str, Any]) -> bool:
+        fixed = parse_dt(task.get("fixed_start"))
+        return bool(fixed and fixed.date() != day)
+
     open_tasks = [
-        t for t in tasks if t["status"] == "open" and t["id"] not in deferred_ids
+        t
+        for t in tasks
+        if t["status"] == "open"
+        and t["id"] not in deferred_ids
+        and not scheduled_on_another_day(t)
     ]
     fixed = sorted(
         [t for t in open_tasks if t["flexibility"] == "fixed" and t.get("fixed_start")],
@@ -496,6 +556,32 @@ def schedule_tasks(
         )
     blocks: list[dict[str, Any]] = []
     cursor = start
+    focus_since_break = 0
+
+    def park(after: datetime, focused_minutes: int) -> datetime:
+        nonlocal focus_since_break
+        focus_since_break += focused_minutes
+        nxt = after + timedelta(minutes=buffer_minutes)
+        if break_minutes and focus_since_break >= 90 and nxt < day_end:
+            break_end = nxt + timedelta(minutes=break_minutes)
+            blocks.append(
+                {
+                    "task_id": None,
+                    "title": "Recovery break",
+                    "start_iso": nxt.isoformat(),
+                    "end_iso": break_end.isoformat(),
+                    "start": clock(nxt),
+                    "end": clock(break_end),
+                    "minutes": break_minutes,
+                    "kind": "break",
+                    "label": "Break",
+                    "detail": f"{break_minutes} minute break from your settings",
+                    "deadline": None,
+                }
+            )
+            focus_since_break = 0
+            return break_end
+        return nxt
 
     def add_block(
         task: dict[str, Any],
@@ -535,7 +621,7 @@ def schedule_tasks(
             needed = timedelta(minutes=task["duration_minutes"])
             if earliest + needed <= fixed_start:
                 add_block(task, earliest, earliest + needed, "focus")
-                cursor = earliest + needed + timedelta(minutes=buffer_minutes)
+                cursor = park(earliest + needed, task["duration_minutes"])
                 remaining.pop(0)
             else:
                 break
@@ -553,7 +639,7 @@ def schedule_tasks(
         earliest = max(cursor, parse_dt(task.get("earliest_start")) or cursor)
         end = earliest + timedelta(minutes=task["duration_minutes"])
         add_block(task, earliest, end, "focus")
-        cursor = end + timedelta(minutes=buffer_minutes)
+        cursor = park(end, task["duration_minutes"])
 
     blocks.sort(key=lambda b: b["start_iso"])
     risks = []
@@ -605,7 +691,7 @@ def schedule_tasks(
     )
     confidence = max(24, min(96, 94 - len(risks) * 14 - (12 if free < 30 else 0)))
     return {
-        "date": TODAY.isoformat(),
+        "date": day.isoformat(),
         "status": "at_risk" if risks else "on_track",
         "blocks": blocks,
         "risks": risks,
@@ -617,33 +703,47 @@ def schedule_tasks(
                 1
                 for t in open_tasks
                 if parse_dt(t.get("deadline"))
-                and parse_dt(t["deadline"]).date() == TODAY
+                and parse_dt(t["deadline"]).date() == day
             ),
             "risky_tasks": len(risks),
             "confidence": confidence,
+            "applied_buffer_minutes": buffer_minutes,
+            "applied_break_minutes": break_minutes,
+            "planning_style": prefs.get("planning_style"),
         },
         "deferred_task_ids": list(deferred_ids),
         "valid": not any(r["severity"] == "critical" for r in risks),
     }
 
 
-def latest_applied_plan() -> dict[str, Any] | None:
+def latest_relevant_plan() -> dict[str, Any] | None:
     with db() as conn:
         row = conn.execute(
-            "SELECT * FROM plans WHERE status IN ('applied','restored') ORDER BY created_at DESC LIMIT 1"
+            """SELECT * FROM plans
+            WHERE status IN ('applied','restored','outdated')
+            ORDER BY created_at DESC LIMIT 1"""
         ).fetchone()
     return dict(row) if row else None
 
 
-def current_day() -> dict[str, Any]:
-    plan = latest_applied_plan()
-    if plan:
+def current_day(on: date | None = None) -> dict[str, Any]:
+    day = on or planning_day()
+    tasks = get_tasks()
+    plan = latest_relevant_plan()
+    if plan and plan["status"] in {"applied", "restored"} and day == planning_day():
         payload = json.loads(plan["after_json"])
+        if payload.get("date") == day.isoformat():
+            payload["active_plan_id"] = plan["id"]
+            payload["plan_version"] = plan["version"]
+            payload["plan_stale"] = False
+            payload["schedule_source"] = "approved_plan"
+            return payload
+    payload = schedule_tasks(tasks, on=day)
+    payload["plan_version"] = plan["version"] if plan else 1
+    payload["plan_stale"] = bool(plan and plan["status"] == "outdated")
+    payload["schedule_source"] = "live"
+    if plan and plan["status"] in {"applied", "restored"}:
         payload["active_plan_id"] = plan["id"]
-        payload["plan_version"] = plan["version"]
-        return payload
-    payload = schedule_tasks(get_tasks())
-    payload["plan_version"] = 1
     return payload
 
 
@@ -700,12 +800,12 @@ def generate_recovery(payload: DisruptionIn) -> dict[str, Any]:
         "Renegotiate one constraint",
     ]
     descriptions = [
-        "Move the lowest-risk flexible task to tomorrow and protect the commitments with deadlines.",
+        "Remove the lowest-risk flexible task with no deadline from today. It stays in your task list and is not placed on another day yet.",
         "Keep today's workload and use up to one additional hour after normal working time.",
         "Keep the disrupted plan and ask to change a deadline or fixed collection window.",
     ]
     tradeoffs = [
-        "One flexible task moves to tomorrow; the most urgent deadline keeps recovery room.",
+        "One flexible task leaves today's plan; multi-day placement is not available yet.",
         "Nothing is deferred, but the day becomes longer and has less personal buffer.",
         "No automatic message is sent, and the other party may not agree.",
     ]
@@ -872,6 +972,25 @@ def save_preferences(payload: PreferencesIn):
                 int(values["onboarding_complete"]),
             ),
         )
+        conn.execute(
+            "INSERT INTO events VALUES (?,?,?,?,?)",
+            (
+                uid(),
+                "preferences_updated",
+                "Planning preferences saved",
+                json.dumps(
+                    {
+                        "planning_style": values["planning_style"],
+                        "break_minutes": values["break_minutes"],
+                        "default_buffer_minutes": values["default_buffer_minutes"],
+                    }
+                ),
+                utcnow(),
+            ),
+        )
+        conn.execute(
+            "UPDATE plans SET status='outdated' WHERE status IN ('applied','restored')"
+        )
     return get_preferences()
 
 
@@ -919,6 +1038,9 @@ def create_task(payload: TaskCreate):
                 stamp,
             ),
         )
+        conn.execute(
+            "UPDATE plans SET status='outdated' WHERE status IN ('applied','restored')"
+        )
     return next(t for t in get_tasks(True) if t["id"] == task_id)
 
 
@@ -940,6 +1062,9 @@ def update_task(task_id: str, payload: TaskPatch):
         conn.execute(
             "INSERT INTO events VALUES (?,?,?,?,?)",
             (uid(), "task_updated", task_id, json.dumps(fields), utcnow()),
+        )
+        conn.execute(
+            "UPDATE plans SET status='outdated' WHERE status IN ('applied','restored')"
         )
     return next(t for t in get_tasks(True) if t["id"] == task_id)
 
@@ -1008,8 +1133,14 @@ def update_project(project_id: str, payload: ProjectPatch):
 
 
 @app.get("/api/day")
-def get_day():
-    return current_day()
+def get_day(day: str | None = None):
+    chosen = None
+    if day:
+        try:
+            chosen = date.fromisoformat(day)
+        except ValueError as error:
+            raise HTTPException(400, "Use an ISO date, for example 2026-10-21") from error
+    return current_day(chosen)
 
 
 @app.post("/api/day/generate")
@@ -1139,8 +1270,30 @@ def restore_plan(plan_id: str):
     }
 
 
+@app.get("/api/activity")
+def list_activity(limit: int = 20):
+    limit = max(1, min(limit, 50))
+    with db() as conn:
+        rows = conn.execute(
+            """SELECT id, event_type, detail, metadata_json, created_at
+            FROM events ORDER BY created_at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "type": row["event_type"],
+            "detail": row["detail"],
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
 @app.get("/api/patterns")
-def patterns():
+def patterns(days: int = 7):
+    days = max(1, min(days, 30))
     tasks = get_tasks(True)
     completed = [
         t
@@ -1169,7 +1322,6 @@ def patterns():
     focus_score = max(
         35, min(96, 82 - max(delta, 0) - active_count * 2 + recovered * 3)
     )
-    activity = [38, 54, 47, 76, 64, 88, max(42, completion_rate)]
     project_data = get_projects()
     focus_minutes = sum(
         task["duration_minutes"]
@@ -1182,6 +1334,32 @@ def patterns():
         if task["status"] != "archived" and task["flexibility"] == "fixed"
     )
     admin_minutes = max(0, scheduled - focus_minutes - fixed_minutes)
+    labels: list[str] = []
+    activity: list[int] = []
+    time_trend: list[float] = []
+    focus_trend: list[int] = []
+    today = planning_day()
+    for offset in range(days - 1, -1, -1):
+        point = today - timedelta(days=offset)
+        labels.append(point.strftime("%a"))
+        completed_minutes = sum(
+            task.get("actual_minutes") or 0
+            for task in completed
+            if (task.get("updated_at") or "").startswith(point.isoformat())
+        )
+        time_trend.append(round(completed_minutes / 60, 1))
+        activity.append(min(100, completed_minutes))
+        focus_trend.append(focus_score if point == today else 0)
+    groups: dict[str, list[int]] = {}
+    for task in completed:
+        name = (task.get("tags") or ["General"])[0].title()
+        groups.setdefault(name, []).append(
+            task["actual_minutes"] - task["duration_minutes"]
+        )
+    categories = [
+        {"name": name, "delta": round(sum(values) / len(values))}
+        for name, values in groups.items()
+    ]
     return {
         "sample_size": len(completed),
         "average_estimate_delta": delta,
@@ -1194,9 +1372,11 @@ def patterns():
         ),
         "scheduled_hours": round(scheduled / 60, 1),
         "activity": activity,
-        "week_labels": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-        "time_trend": [3.2, 4.1, 3.6, 5.4, 4.7, 2.8, 3.9],
-        "focus_trend": [58, 64, 61, 73, 76, 68, focus_score],
+        "week_labels": labels,
+        "time_trend": time_trend,
+        "focus_trend": focus_trend,
+        "range_days": days,
+        "history_note": "Charts count recorded completion time. Days without completed tasks stay at zero.",
         "time_breakdown": [
             {"name": "Focus", "minutes": focus_minutes, "color": "#e4794c"},
             {"name": "Meetings", "minutes": fixed_minutes, "color": "#657c9a"},
@@ -1210,12 +1390,7 @@ def patterns():
             }
             for p in project_data
         ],
-        "categories": [
-            {"name": "Deep work", "delta": 18},
-            {"name": "Admin", "delta": 4},
-            {"name": "Study", "delta": 12},
-            {"name": "Errands", "delta": -6},
-        ],
+        "categories": categories,
     }
 
 
@@ -1240,7 +1415,7 @@ def opportunities():
                 "kind": "alert",
                 "title": f"Protect {first_risk['task']}",
                 "description": first_risk["reason"],
-                "confidence": 94,
+                "confidence": day["metrics"]["confidence"],
                 "evidence": f"{first_risk['slack_minutes']} minutes calculated slack",
                 "action": "Open recovery workspace",
             }
@@ -1252,7 +1427,7 @@ def opportunities():
                 "kind": "prediction",
                 "title": "Your day can absorb a small delay",
                 "description": f"The current schedule has {day['metrics']['free_buffer_minutes']} minutes of unused capacity after protected buffers.",
-                "confidence": 91,
+                "confidence": day["metrics"]["confidence"],
                 "evidence": "Validated against working hours and fixed commitments",
                 "action": "Keep this plan",
             }
@@ -1264,7 +1439,7 @@ def opportunities():
                 "kind": "suggestion",
                 "title": f"Start with {flexible['title']}",
                 "description": "It is flexible enough to move, but completing it early creates recovery room later in the day.",
-                "confidence": 86,
+                "confidence": max(50, day["metrics"]["confidence"] - 8),
                 "evidence": f"{flexible['duration_minutes']} minute flexible block",
                 "action": "View on calendar",
             }

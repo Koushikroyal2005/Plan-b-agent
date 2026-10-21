@@ -119,7 +119,12 @@ def test_agent_and_mcp_use_controlled_tools(client: TestClient):
     assert denied.status_code == 404
 
 
-def test_model_catalog_and_persistent_selection(client: TestClient):
+def test_model_catalog_and_persistent_selection(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        main.settings.__class__,
+        "provider_configured",
+        property(lambda self: True),
+    )
     models = client.get("/api/provider/models")
     assert models.status_code == 200
     assert "openai/gpt-oss-20b" in models.json()["items"]
@@ -133,3 +138,75 @@ def test_model_catalog_and_persistent_selection(client: TestClient):
 
     unavailable = client.put("/api/provider/model", json={"model": "missing/model"})
     assert unavailable.status_code == 400
+
+
+def test_schedule_uses_today_and_rebuilds_after_edits(client: TestClient):
+    from datetime import date
+
+    day = client.get("/api/day").json()
+    assert day["date"] == date.today().isoformat()
+    assert day["schedule_source"] == "live"
+    assert day["plan_stale"] is False
+
+    recovery = client.post(
+        "/api/recovery/options",
+        json={"disruption_minutes": 20, "reason": "Standup ran long"},
+    )
+    feasible = next(option for option in recovery.json()["options"] if option["feasible"])
+    assert client.post(f"/api/recovery/{feasible['id']}/approve").status_code == 200
+    approved = client.get("/api/day").json()
+    assert approved["schedule_source"] == "approved_plan"
+
+    task = next(item for item in client.get("/api/tasks").json() if item["title"] == "Finish assignment")
+    changed = client.patch(
+        f"/api/tasks/{task['id']}",
+        json={"duration_minutes": 90},
+    )
+    assert changed.status_code == 200
+    refreshed = client.get("/api/day").json()
+    assert refreshed["plan_stale"] is True
+    assert refreshed["schedule_source"] == "live"
+    assert any(
+        block["task_id"] == task["id"] and block["minutes"] == 90
+        for block in refreshed["blocks"]
+    )
+
+
+def test_preferences_change_breaks_and_activity_is_real(client: TestClient):
+    prefs = client.get("/api/preferences").json()
+    prefs["break_minutes"] = 0
+    assert client.put("/api/preferences", json=prefs).status_code == 200
+    without_breaks = client.get("/api/day").json()
+    assert all(block["kind"] != "break" for block in without_breaks["blocks"])
+
+    prefs["break_minutes"] = 15
+    prefs["planning_style"] = "realistic"
+    assert client.put("/api/preferences", json=prefs).status_code == 200
+    with_breaks = client.get("/api/day").json()
+    assert any(block["kind"] == "break" for block in with_breaks["blocks"])
+    assert with_breaks["metrics"]["applied_break_minutes"] == 15
+    assert with_breaks["metrics"]["applied_buffer_minutes"] == prefs["default_buffer_minutes"] + 5
+
+    project = client.get("/api/projects").json()[0]
+    renamed = client.patch(
+        f"/api/projects/{project['id']}",
+        json={"name": "Renamed workspace"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Renamed workspace"
+    archived = client.patch(
+        f"/api/projects/{project['id']}",
+        json={"status": "archived"},
+    )
+    assert archived.status_code == 200
+    assert all(item["id"] != project["id"] for item in client.get("/api/projects").json())
+
+    activity = client.get("/api/activity").json()
+    assert any(item["type"] == "project_updated" for item in activity)
+    assert any(item["type"] == "preferences_updated" for item in activity)
+
+    patterns = client.get("/api/patterns?days=7").json()
+    assert patterns["time_trend"] != [3.2, 4.1, 3.6, 5.4, 4.7, 2.8, 3.9]
+    assert patterns["categories"] == []
+    assert "recorded completion time" in patterns["history_note"]
+    assert len(patterns["week_labels"]) == 7
