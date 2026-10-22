@@ -10,7 +10,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Circle,
   Clock3,
   Code2,
   Columns3,
@@ -37,13 +36,27 @@ import {
 } from "lucide-react";
 import { api } from "./core/api";
 import { navigation } from "./core/navigation";
-import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
 import { ProviderModelPicker } from "./features/settings/ProviderModelPicker";
 import { AppHeader } from "./components/AppHeader";
 import { VoiceAssistant } from "./components/VoiceAssistant";
+import { StepTimeline, TurnDetails } from "./components/TurnDetails";
+import { VoiceSessionProvider, useVoiceSession } from "./voice/VoiceSession";
+import { BrowserSynthesis, selectVoiceProvider } from "./voice/providers";
 import { CalendarWorkspace } from "./features/calendar/CalendarWorkspace";
 import "./styles.css";
 import "./features.css";
+
+const READ_ONLY_CAPABILITIES = new Set([
+  "tasks.search",
+  "calendar.inspect",
+  "calendar.find_slot",
+  "schedule.assess",
+  "schedule.recover",
+  "schedule.explain",
+  "insights.explain",
+  "actions.history",
+  "app.navigate",
+]);
 
 function App() {
   const [view, setView] = useState("dashboard");
@@ -74,9 +87,12 @@ function App() {
   const [assistantTurn, setAssistantTurn] = useState(null);
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantQueueSize, setAssistantQueueSize] = useState(0);
+  const [demo, setDemo] = useState({ active: false });
   const assistantBusyRef = useRef(false);
   const assistantQueueRef = useRef([]);
   const previousView = useRef("dashboard");
+  const voiceProvider = useMemo(() => selectVoiceProvider(), []);
+  const voiceSynthesis = useMemo(() => new BrowserSynthesis(), []);
   const sessionId = useMemo(() => {
     const existing = window.localStorage.getItem("planb-assistant-session");
     if (existing) return existing;
@@ -85,9 +101,9 @@ function App() {
     return created;
   }, []);
 
-  const notify = (title, body) => {
-    setToast({ title, body });
-    window.setTimeout(() => setToast(null), 3500);
+  const notify = (title, body, action = null) => {
+    setToast({ title, body, action });
+    window.setTimeout(() => setToast(null), action ? 8000 : 3500);
   };
   const refresh = async () => {
     setLoading(true);
@@ -133,6 +149,7 @@ function App() {
   };
   useEffect(() => {
     refresh();
+    api("/demo").then(setDemo).catch(() => {});
   }, []);
   useEffect(() => {
     let active = true;
@@ -210,23 +227,24 @@ function App() {
           client_capabilities: ["navigate", "modal", "highlight", "speech-synthesis"],
         }),
       });
+      const turn = { ...result, channel };
       setMessages((items) => [
         ...items,
-        { id: result.turn_id, role: "assistant", text: result.message, meta: result.agent, tools: result.tools || [] },
+        { id: result.turn_id, role: "assistant", text: result.message, understood: result.understood, turn },
       ]);
-      setActivity(result.tools || []);
+      setActivity(result.steps || []);
       if (result.recovery) setRecovery(result.recovery);
-      setAssistantTurn({ ...result, channel });
+      setAssistantTurn(turn);
       runUiCommands(result.ui_commands);
-      if (result.tools?.some((item) => ["create_task", "create_project", "update_task"].includes(item.tool))) {
+      if (result.tools?.some((item) => !READ_ONLY_CAPABILITIES.has(item.tool))) {
         await refresh();
       }
+      return turn;
     } catch (error) {
-      setMessages((items) => [
-        ...items,
-        { role: "assistant", text: `Planning service error: ${error.message}` },
-      ]);
-      setAssistantTurn({ say: `Planning service error: ${error.message}`, state: "failed", channel });
+      const failed = { turn_id: entry.id, say: `Plan B couldn't finish that: ${error.message}`, state: "failed", channel };
+      setMessages((items) => [...items, { id: `${entry.id}-error`, role: "assistant", text: failed.say }]);
+      setAssistantTurn(failed);
+      return failed;
     } finally {
       assistantBusyRef.current = false;
       setAssistantBusy(false);
@@ -246,12 +264,49 @@ function App() {
       notify("Task update failed", error.message);
     }
   };
+  const forgetUndo = (actionId) => {
+    const strip = (turn) => turn?.undo?.action_id === actionId ? { ...turn, undo: null } : turn;
+    setMessages((items) => items.map((item) => item.turn ? { ...item, turn: strip(item.turn) } : item));
+    setAssistantTurn(strip);
+  };
+  const undoAction = async (actionId) => {
+    try {
+      const result = await api(`/actions/${actionId}/undo`, { method: "POST" });
+      forgetUndo(actionId);
+      const turn = { ...result, channel: "text" };
+      setMessages((items) => [...items, { id: result.turn_id, role: "assistant", text: result.say, understood: result.understood, turn }]);
+      setAssistantTurn(turn);
+      setActivity(result.steps || []);
+      notify("Undone", result.say);
+      await refresh();
+    } catch (error) {
+      notify("Undo failed", error.message);
+    }
+  };
+  const toggleDemo = async () => {
+    try {
+      const next = await api("/demo", { method: demo.active ? "DELETE" : "POST" });
+      setDemo(next);
+      setRecovery(null);
+      notify(
+        next.active ? "Judge demo loaded" : "Demo closed",
+        next.active
+          ? "It's 1:30 PM and the team meeting just started. Try: “My meeting ran 45 minutes late and I still need to finish the pitch before 6.”"
+          : "Your own tasks and settings are back.",
+      );
+      setView("dashboard");
+      await refresh();
+    } catch (error) {
+      notify("Demo unavailable", error.message);
+    }
+  };
   const approve = async (proposalId) => {
     try {
-      await api(`/recovery/${proposalId}/approve`, { method: "POST" });
+      const result = await api(`/recovery/${proposalId}/approve`, { method: "POST" });
       notify(
         "Recovery plan applied",
         "The previous version remains in history.",
+        result.action_id ? { label: "Undo", onClick: () => undoAction(result.action_id) } : null,
       );
       await refresh();
     } catch (error) {
@@ -326,6 +381,8 @@ function App() {
         navigate={setView}
         displayName={data.preferences?.display_name || "there"}
         activityFeed={data.activityFeed}
+        demo={demo}
+        onToggleDemo={toggleDemo}
       />
     ),
     calendar: (
@@ -369,10 +426,11 @@ function App() {
       <AssistantView
         messages={messages}
         activity={activity}
+        lastTurn={assistantTurn}
         sendMessage={sendMessage}
+        onUndo={undoAction}
         preferences={data.preferences}
-        currentView={view}
-        notify={notify}
+        currentView={previousView.current}
         busy={assistantBusy}
         queueSize={assistantQueueSize}
       />
@@ -409,6 +467,13 @@ function App() {
   };
 
   return (
+    <VoiceSessionProvider
+      provider={voiceProvider}
+      synthesis={voiceSynthesis}
+      language={data.preferences?.language || "en-IN"}
+      voiceOutput={data.preferences?.voice_output !== false}
+      onUtterance={sendMessage}
+    >
     <div className="app-shell">
       <Sidebar
         view={view}
@@ -474,11 +539,11 @@ function App() {
         busy={assistantBusy}
         preferences={data.preferences}
         currentView={view}
-        onSend={sendMessage}
+        onUndo={undoAction}
         onOpenChat={() => setView("assistant")}
-        onDismiss={() => setAssistantTurn(null)}
       />}
     </div>
+    </VoiceSessionProvider>
   );
 }
 
@@ -574,13 +639,14 @@ const Loading = () => (
     <span>Calculating a resilient plan…</span>
   </div>
 );
-const Toast = ({ title, body }) => (
+const Toast = ({ title, body, action }) => (
   <div className="toast">
     <Check size={16} />
     <div>
       <b>{title}</b>
       <small>{body}</small>
     </div>
+    {action && <button className="toast-action" onClick={action.onClick}>{action.label}</button>}
   </div>
 );
 
@@ -600,6 +666,8 @@ function TodayView({
   navigate,
   displayName,
   activityFeed = [],
+  demo = {},
+  onToggleDemo,
 }) {
   const [filter, setFilter] = useState("all");
   const [showAllActivity, setShowAllActivity] = useState(false);
@@ -654,11 +722,20 @@ function TodayView({
           <Button onClick={() => onRecovery()}>
             <Zap size={14} /> Something changed
           </Button>
+          <Button onClick={onToggleDemo}>
+            <Sparkles size={14} /> {demo.active ? "Exit judge demo" : "Load judge demo"}
+          </Button>
           <Button primary onClick={onAdd}>
             <Plus size={15} /> Add task
           </Button>
         </div>
       </div>
+      {demo.active && (
+        <div className="demo-banner">
+          <b>Judge demo · the clock is pinned at {demo.clock}</b>
+          <span>Say or type: “My meeting ran 45 minutes late and I still need to finish the pitch before 6.” Then “Don't move lecture notes. Shorten the report review instead.”, “Apply it”, and “Undo that”.</span>
+        </div>
+      )}
       <div className={`risk-banner ${day.status === "on_track" ? "on-track" : ""}`}>
         <span>{day.status === "on_track" ? "✓" : "!"}</span>
         <div>
@@ -1475,36 +1552,27 @@ function TasksView({
 function AssistantView({
   messages,
   activity,
+  lastTurn,
   sendMessage,
+  onUndo,
   preferences,
-  currentView,
-  notify,
   busy,
   queueSize,
 }) {
   const [input, setInput] = useState("");
   const [assistantMode, setAssistantMode] = useState("command");
   const messagesEndRef = useRef(null);
-  const { listening, supported, toggle } = useSpeechRecognition({
-    language: preferences?.language || "en-IN",
-    onTranscript: setInput,
-  });
+  const voice = useVoiceSession();
+  const lastAssistantId = [...messages].reverse().find((message) => message.role === "assistant")?.id;
   const submit = () => {
     if (!input.trim()) return;
-    sendMessage(input);
+    voice.submit(input, "text");
     setInput("");
   };
-  const voice = () =>
-    supported
-      ? toggle()
-      : notify(
-          "Voice input unavailable",
-          "Use a supported browser or connect Wispr Flow later.",
-        );
-  const tools = activity;
+  const send = (text) => voice.submit(text, "text");
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, busy]);
+  }, [messages, busy, voice.phase]);
   return (
     <View id="assistant">
       <div className="section-head">
@@ -1513,7 +1581,7 @@ function AssistantView({
           <h1>Plan B command centre</h1>
           <p>Talk naturally, preview real actions, and control every planning workflow.</p>
         </div>
-        <span className="provider">● Server controlled · approval gated</span>
+        <span className="provider">● Every change can be undone</span>
       </div>
       <div className="assistant-modebar">
         {[
@@ -1546,20 +1614,37 @@ function AssistantView({
                 )}
                 <div>
                   <p>{message.text}</p>
+                  {message.turn && (
+                    <TurnDetails
+                      turn={message.id === lastAssistantId ? message.turn : { ...message.turn, choices: [] }}
+                      metrics={message.id === lastAssistantId ? voice.metrics : null}
+                      onSend={send}
+                      onUndo={onUndo}
+                      disabled={busy}
+                      showSteps={message.turn.steps?.length > 1}
+                    />
+                  )}
                   <small>
                     {message.role === "assistant"
-                      ? message.meta?.intent
-                        ? `${message.meta.intent.replaceAll("_", " ")} · ${message.meta.source || "planner"}`
-                        : "Plan B"
+                      ? ["Plan B", message.understood || message.meta?.understood].filter(Boolean).join(" · ")
                       : message.status || "You · now"}
                   </small>
                 </div>
               </div>
             ))}
-            {busy && (
+            {(busy || voice.busy) && (
               <div className="message assistant pending-message">
                 <span className="message-icon">✦</span>
-                <div><span className="thinking-dots"><i /><i /><i /></span><p>Plan B is checking your request…</p><small>{queueSize ? `${queueSize} more message${queueSize === 1 ? "" : "s"} queued` : "Working now"}</small></div>
+                <div><span className="thinking-dots"><i /><i /><i /></span><p>{voice.ack || "One moment…"}</p><small>{queueSize ? `${queueSize} more message${queueSize === 1 ? "" : "s"} queued` : "Working now"}</small></div>
+              </div>
+            )}
+            {voice.error && (
+              <div className="message assistant voice-error" role="alert">
+                <span className="message-icon">!</span>
+                <div>
+                  <p>{voice.error.message}</p>
+                  {voice.error.recoverable && <button onClick={voice.retry}><RotateCcw size={13} /> Retry</button>}
+                </div>
               </div>
             )}
             <div ref={messagesEndRef} className="messages-end" />
@@ -1570,21 +1655,28 @@ function AssistantView({
               assistantMode === "dictation" ? "Capture a detailed task description" : "Can I still finish everything today?",
               assistantMode === "command" ? "Open my calendar and show conflicts" : "Give me the shortest realistic plan",
             ].map((text) => (
-              <button onClick={() => sendMessage(text)} key={text}>
+              <button onClick={() => send(text)} key={text}>
                 {text}
               </button>
             ))}
           </div>
           <div className="composer">
-            <button className={listening ? "listening" : ""} onClick={voice} disabled={busy}>
+            <button
+              className={voice.active ? "listening" : ""}
+              onClick={voice.toggle}
+              disabled={busy || preferences?.voice_input === false}
+              aria-label={voice.active ? "Stop listening" : "Speak to Plan B"}
+              title={voice.supported ? voice.label : "Voice input isn't available in this browser"}
+            >
               <Mic size={17} />
             </button>
             <input
-              value={input}
+              value={voice.active ? voice.interim : input}
+              readOnly={voice.active}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => event.key === "Enter" && submit()}
               placeholder={
-                listening ? "Listening…" : "Tell Plan B what changed…"
+                voice.active ? "Listening… pause when you're done" : "Tell Plan B what changed…"
               }
             />
             <button className="send" onClick={submit} disabled={!input.trim()}>
@@ -1592,55 +1684,32 @@ function AssistantView({
             </button>
           </div>
           <small className="note">
-            Nothing changes until you explicitly confirm it.
+            Changes are previewed first, and anything applied can be undone.
           </small>
         </div>
         <div className="panel activity-panel">
           <PanelHeading
-            title="Execution context"
-            sub={`Currently working from ${currentView || "today"}`}
+            title="What Plan B did"
+            sub={lastTurn?.understood || "Your latest request, step by step"}
           />
+          {activity.length ? (
+            <StepTimeline steps={activity} />
+          ) : (
+            <p className="no-tool-activity">Nothing has run yet. Ask a question or tell Plan B what changed.</p>
+          )}
+          {lastTurn?.undo && (
+            <button className="ghost undo-latest" onClick={() => onUndo(lastTurn.undo.action_id)} disabled={busy}>
+              <RotateCcw size={13} /> Undo “{lastTurn.undo.label}”
+            </button>
+          )}
           <div className="assistant-context-card">
             <small>WHAT PLAN B CAN CONTROL</small>
             <div><span>Tasks</span><span>Calendar</span><span>Projects</span><span>Navigation</span><span>Recovery</span><span>Insights</span></div>
-            <p>Read actions run immediately. Changes are previewed and confirmation-gated.</p>
+            <p>Questions are answered right away. Changes wait for your OK, and you can say “undo that” afterwards.</p>
           </div>
-          <h3 className="activity-label">Latest tool activity</h3>
-          <div className="activities">
-            {tools.length ? tools.map((item) => (
-              <ActivityItem
-                key={`${item.tool}-${item.status}`}
-                done={item.status === "complete"}
-                title={item.tool.replaceAll("_", " ")}
-                detail={item.status}
-              />
-            )) : <p className="no-tool-activity">No tool ran in this turn. Conversation never pretends to execute an action.</p>}
-          </div>
-          <code>
-            bounded orchestrator <span>max 6 steps</span>
-          </code>
-          <code>
-            approval gate <span>required</span>
-          </code>
-          <code>
-            write tools <span>allowlisted</span>
-          </code>
         </div>
       </div>
     </View>
-  );
-}
-function ActivityItem({ done, title, detail }) {
-  return (
-    <div className="activity-item">
-      <span className={done ? "done" : ""}>
-        {done ? <Check size={11} /> : <Circle size={10} />}
-      </span>
-      <div>
-        <b>{title}</b>
-        <small>{detail}</small>
-      </div>
-    </div>
   );
 }
 
