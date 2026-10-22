@@ -15,13 +15,15 @@ The compact panel reads `/api/briefing` whenever assistant state changes. Sugges
 
 ## Request lifecycle
 
-1. Capture text or browser speech input.
-2. Show progressive states: understanding, checking the plan, and preparing a safe action.
-3. Send the request to the existing assistant endpoint with the voice channel when appropriate.
-4. Let the backend planner select typed tools and validate arguments.
-5. Require explicit confirmation for consequential proposed changes.
-6. Refresh the briefing from persisted application state.
-7. Speak the result when voice output is enabled.
+1. Capture text or speech through the shared `VoiceSessionProvider` (`frontend/src/voice/`), which owns the microphone, end-of-speech detection, barge-in, speech output, and error messages for every view.
+2. Show an immediate local acknowledgement while the backend works.
+3. The backend `AssistantEngine` (`backend/app/engine/`) turns the request into a typed plan of capability steps, using rules first and an optional model planner with a 5-second timeout and a circuit breaker.
+4. Resolve task and project references, and ask when something is missing or ambiguous.
+5. Require explicit confirmation for consequential changes, then execute, verify postconditions, and record an undoable entry in the action ledger.
+6. Return the reply, step timeline, choices, evidence, and undo handle; the UI refreshes affected data.
+7. Speak the result when voice output is enabled, and listen again when the assistant asked a question.
+
+See `assistant-engine-summary.md` for a plain-English overview of the engine and the judge demo.
 
 ## Briefing engine
 

@@ -1,7 +1,13 @@
-.day-grid {
+.day-grid,
+.today-lower {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.75fr);
   gap: 18px;
+}
+.today-lower {
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  margin-top: 18px;
+  align-items: start;
 }
 .prediction-panel {
   padding: 24px;
@@ -777,6 +783,7 @@
 }
 @media (max-width: 1100px) {
   .day-grid,
+  .today-lower,
   .calendar-layout,
   .mcp-layout {
     grid-template-columns: 1fr;
@@ -804,6 +811,7 @@
     overflow-x: auto;
   }
   .day-grid,
+  .today-lower,
   .analytics-grid {
     grid-template-columns: 1fr;
   }
@@ -2216,6 +2224,10 @@ body {
 .screen4-rail .feed-row small {
   font-size: 7px;
 }
+.today-lower .rail-suggestion {
+  margin-top: 14px;
+  border-radius: 14px;
+}
 .rail-suggestion {
   display: flex;
   align-items: flex-start;
@@ -2462,3 +2474,42 @@ body {
   padding: 16px;
   color: var(--muted);
 }
+
+/* Assistant turn: timeline, choices, undo, decision panel */
+.turn-details { display:grid; gap:8px; margin-top:8px; }
+.turn-timeline { list-style:none; margin:0; padding:0; display:grid; gap:5px; }
+.turn-step { display:flex; gap:8px; align-items:flex-start; opacity:0; animation:turn-step-in .25s ease forwards; }
+.turn-step > span { flex:none; display:grid; place-items:center; width:17px; height:17px; border-radius:50%; background:#e8f5ec; color:#2f8a52; }
+.turn-step.failed > span { background:#fdeceb; color:#c2413a; }
+.turn-step.waiting > span { background:#f1f2f5; color:#8b909a; }
+.turn-step b { display:block; font-size:11px; font-weight:600; color:#30343c; }
+.turn-step small { display:block; font-size:10px; color:var(--muted); }
+@keyframes turn-step-in { from { opacity:0; transform:translateY(3px); } to { opacity:1; transform:none; } }
+.turn-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.turn-actions button { display:inline-flex; align-items:center; gap:5px; padding:6px 11px; border:1px solid #dcdfe6; border-radius:16px; background:#fff; color:#3a3f48; font-size:11px; cursor:pointer; }
+.turn-actions button.primary { background:#6f62dc; border-color:#6f62dc; color:#fff; }
+.turn-actions button.undo { border-style:dashed; }
+.turn-actions button:disabled { opacity:.5; cursor:default; }
+.decision-panel > button { display:inline-flex; align-items:center; gap:4px; padding:0; border:0; background:none; color:#6f62dc; font-size:10px; cursor:pointer; }
+.decision-panel.open > button svg { transform:rotate(180deg); }
+.decision-panel > div { margin-top:6px; padding:9px 11px; border:1px solid #e6e8ee; border-radius:9px; background:#fafbfc; font-size:10px; }
+.decision-panel dl { margin:0; display:grid; gap:4px; }
+.decision-panel dl div { display:grid; grid-template-columns:90px 1fr; gap:8px; }
+.decision-panel dt { color:var(--muted); }
+.decision-panel dd { margin:0; color:#30343c; }
+.decision-panel ul { margin:8px 0 0; padding-left:16px; color:#30343c; }
+.decision-metrics { display:block; margin-top:8px; color:var(--muted); }
+
+/* Voice runtime states */
+.voice-error { padding:10px 12px; border:1px solid #f3c9c4; border-radius:10px; background:#fdf3f2; color:#8f2f28; font-size:12px; }
+.voice-error p { margin:0 0 8px; }
+.voice-error div { display:flex; gap:6px; }
+.voice-error button { display:inline-flex; align-items:center; gap:4px; padding:5px 10px; border:1px solid #e9b4ad; border-radius:14px; background:#fff; color:#8f2f28; font-size:11px; cursor:pointer; }
+.voice-live { margin:6px 0 0; min-height:36px; font-size:13px; color:#30343c; }
+.voice-ack { display:flex; align-items:center; gap:8px; color:#4d5260; }
+.undo-latest { display:inline-flex; align-items:center; gap:6px; margin:10px 0; }
+
+/* Judge demo + toast action */
+.demo-banner { display:grid; gap:4px; margin:0 0 14px; padding:11px 14px; border:1px solid #d9d4fb; border-radius:11px; background:#f5f3ff; color:#4a3fb0; font-size:12px; }
+.demo-banner span { color:#5d5a74; line-height:1.5; }
+.toast-action { margin-left:10px; padding:5px 11px; border:1px solid currentColor; border-radius:14px; background:transparent; color:inherit; font-size:11px; cursor:pointer; }

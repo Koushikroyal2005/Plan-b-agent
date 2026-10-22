@@ -1,91 +1,35 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Mic, MicOff, Sparkles, Volume2, X } from "lucide-react";
-import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
-import { useSpeechSynthesis } from "../hooks/useSpeechSynthesis";
+import { useEffect, useState } from "react";
+import { Mic, MicOff, RotateCcw, Sparkles, Square, Volume2, X } from "lucide-react";
+import { useVoiceSession } from "../voice/VoiceSession";
+import { TurnDetails } from "./TurnDetails";
 
 const suggestionsByView = {
   dashboard: ["Plan my day", "What is at risk?", "Create a task"],
-  calendar: ["Find a focus block", "What is next?", "Fix my day"],
+  calendar: ["Find a focus block", "What is next?", "My meeting ran 30 minutes late"],
   tasks: ["Create a task", "Create a project", "What is overdue?"],
   patterns: ["How was my focus?", "Show my progress", "Open my day"],
   settings: ["Turn on voice replies", "Open my day", "What can you do?"],
 };
 
-export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboard", onSend, onOpenChat, onDismiss }) {
+export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboard", onOpenChat, onUndo }) {
+  const voice = useVoiceSession();
   const [expanded, setExpanded] = useState(false);
-  const [liveTranscript, setLiveTranscript] = useState("");
-  const [draft, setDraft] = useState("");
-  const wasSpeaking = useRef(false);
-  const greetingPending = useRef(false);
-  const voiceEnabled = preferences?.voice_output !== false;
-  const { speaking, speak, stop: stopSpeaking } = useSpeechSynthesis({
-    enabled: voiceEnabled,
-    language: preferences?.language || "en-IN",
-  });
-  const onTranscript = useCallback(
-    (value) => {
-      setExpanded(true);
-      setLiveTranscript(value);
-      setDraft(value);
-    },
-    [],
-  );
-  const { listening, supported, toggle, stop, cancel: cancelRecognition, reset } = useSpeechRecognition({
-    language: preferences?.language || "en-IN",
-    onTranscript,
-    onInterim: setLiveTranscript,
-  });
-
+  const shownTurn = voice.turn && voice.turn.turn_id === turn?.turn_id ? voice.turn : turn;
+  const voiceInput = preferences?.voice_input !== false;
+  const working = busy || voice.busy;
   useEffect(() => {
-    if (turn?.channel === "voice" && turn.say) speak(turn.say);
-  }, [turn, speak]);
+    if (turn?.channel === "voice" || voice.error) setExpanded(true);
+  }, [turn, voice.error]);
 
-  useEffect(() => {
-    if (speaking) wasSpeaking.current = true;
-    if (!speaking && wasSpeaking.current && greetingPending.current) {
-      wasSpeaking.current = false;
-      greetingPending.current = false;
-      const timer = window.setTimeout(() => toggle(), 250);
-      return () => window.clearTimeout(timer);
-    }
-    if (!speaking && wasSpeaking.current && turn?.channel === "voice" && turn?.listen_again) {
-      wasSpeaking.current = false;
-      const timer = window.setTimeout(() => toggle(), 250);
-      return () => window.clearTimeout(timer);
-    }
-    return undefined;
-  }, [speaking, toggle, turn]);
-
-  const listen = () => {
-    if (speaking) stopSpeaking();
-    if (!expanded) {
-      setExpanded(true);
-      const hour = new Date().getHours();
-      const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-      const name = preferences?.display_name ? `, ${preferences.display_name}` : "";
-      greetingPending.current = speak(`${greeting}${name}. What can I help you plan?`);
-      if (greetingPending.current) return;
-    }
+  const send = (text) => {
     setExpanded(true);
-    toggle();
+    voice.submit(text, "voice");
   };
-  const cancel = () => {
-    cancelRecognition();
-    setDraft("");
-    setLiveTranscript("");
-    stopSpeaking();
-    if (turn?.state === "asking" || turn?.state === "confirming") onSend("cancel", "voice");
-    else onDismiss?.();
+  const pressOrb = () => {
+    setExpanded(true);
+    if (!voiceInput) return;
+    voice.toggle();
   };
-  const submitDraft = () => {
-    const message = draft.trim();
-    if (!message) return;
-    onSend(message, "voice");
-    setDraft("");
-    setLiveTranscript("");
-    reset();
-  };
-  const status = busy ? "Thinking" : speaking ? "Speaking" : listening ? "Listening" : turn?.state === "confirming" ? "Needs confirmation" : "Ready";
 
   return (
     <div className={`voice-assistant ${expanded ? "expanded" : ""}`} aria-live="polite">
@@ -93,54 +37,57 @@ export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboa
         <div className="voice-card">
           <header>
             <span className="voice-mark"><Sparkles size={16} /></span>
-            <div><b>Plan B Assistant</b><small>{status}</small></div>
+            <div><b>Plan B Assistant</b><small data-testid="voice-phase">{voice.label}</small></div>
             <button aria-label="Close assistant" onClick={() => setExpanded(false)}><X size={16} /></button>
           </header>
-          <p>{turn?.say || "Tell me what you want to do in Plan B."}</p>
-          {(listening || liveTranscript || draft) && (
+
+          {voice.error ? (
+            <div className="voice-error" role="alert">
+              <p>{voice.error.message}</p>
+              <div>
+                {voice.error.recoverable && <button onClick={voice.retry}><RotateCcw size={13} /> Retry</button>}
+                <button onClick={onOpenChat}>Type instead</button>
+              </div>
+            </div>
+          ) : voice.active ? (
             <div className="voice-wave-wrap">
-              {listening && <div className="voice-wave" aria-hidden="true">{[1, 2, 3, 4, 5, 6, 7].map((bar) => <i key={bar} />)}</div>}
-              <textarea
-                aria-label="Voice transcript"
-                value={draft || liveTranscript}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder="Listening… speak naturally, then press Stop"
-              />
+              <div className="voice-wave" aria-hidden="true">{[1, 2, 3, 4, 5, 6, 7].map((bar) => <i key={bar} />)}</div>
+              <p className="voice-live" aria-label="Voice transcript">{voice.interim || "Listening… speak naturally. I'll send when you pause."}</p>
             </div>
+          ) : voice.busy ? (
+            <p className="voice-ack"><span className="thinking-dots"><i /><i /><i /></span> {voice.ack || "One moment…"}</p>
+          ) : (
+            <p>{shownTurn?.say || "Tell me what changed, or ask me to plan, move, or create something."}</p>
           )}
-          {turn?.pending_action && (
-            <div className="voice-intent">
-              <small>Pending action</small>
-              <b>{turn.pending_action.intent.replace(".", " ")}</b>
-            </div>
+
+          {!voice.active && !voice.busy && (
+            <TurnDetails turn={shownTurn} metrics={voice.metrics} onSend={send} onUndo={onUndo} disabled={working} />
           )}
+
           <div className="voice-actions">
-            {listening && <button className="confirm" onClick={stop}><Check size={14} /> Finish speaking</button>}
-            {!listening && draft && <button className="confirm" onClick={submitDraft}><Check size={14} /> Send transcript</button>}
-            {!listening && draft && <button onClick={() => { setDraft(""); setLiveTranscript(""); reset(); }}>Discard</button>}
-            {turn?.requires_confirmation && <button className="confirm" onClick={() => onSend("yes", "voice")}><Check size={14} /> Confirm</button>}
-            {turn?.requires_confirmation && <button onClick={() => onSend("cancel", "voice")}>Cancel</button>}
+            {voice.active && <button className="confirm" onClick={voice.stop}><Square size={12} /> Done speaking</button>}
+            {(voice.active || voice.phase === "speaking") && <button onClick={voice.cancel}>Cancel</button>}
             <button onClick={onOpenChat}>Open chat</button>
           </div>
-          {!turn?.requires_confirmation && !listening && !draft && (
+          {!shownTurn?.choices?.length && !voice.active && !voice.busy && (
             <div className="voice-suggestions">
               {(suggestionsByView[currentView] || suggestionsByView.dashboard).map((suggestion) => (
-                <button key={suggestion} onClick={() => onSend(suggestion, "voice")}>{suggestion}</button>
+                <button key={suggestion} onClick={() => send(suggestion)}>{suggestion}</button>
               ))}
             </div>
           )}
-          {!supported && <small className="voice-warning">Voice recognition is unavailable in this browser. Text commands still work.</small>}
+          {!voiceInput && <small className="voice-warning">Voice input is off in Settings. Tap a suggestion or open chat.</small>}
+          {voiceInput && !voice.supported && <small className="voice-warning">Voice input isn't available in this browser. Text commands still work.</small>}
         </div>
       )}
       <button
-        className={`voice-orb ${listening ? "listening" : ""} ${speaking ? "speaking" : ""}`}
-        aria-label={listening ? "Stop listening" : "Talk to Plan B"}
-        onClick={listen}
-        disabled={busy || !preferences?.voice_input}
+        className={`voice-orb ${voice.active ? "listening" : ""} ${voice.phase === "speaking" ? "speaking" : ""}`}
+        aria-label={voice.active ? "Stop listening" : voice.phase === "speaking" ? "Interrupt and talk" : "Talk to Plan B"}
+        onClick={pressOrb}
+        disabled={working}
       >
-        {listening ? <MicOff size={22} /> : speaking ? <Volume2 size={22} /> : <Mic size={22} />}
+        {voice.active ? <MicOff size={22} /> : voice.phase === "speaking" ? <Volume2 size={22} /> : <Mic size={22} />}
       </button>
-      {(listening || speaking || busy) && <button className="voice-stop" onClick={cancel}>Stop</button>}
     </div>
   );
 }
