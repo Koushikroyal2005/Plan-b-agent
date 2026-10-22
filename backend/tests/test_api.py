@@ -97,11 +97,17 @@ def test_recovery_requires_and_records_approval(client: TestClient):
     assert client.get("/api/recovery/history").json()[0]["status"] == "applied"
 
 
+def capabilities(body):
+    return [item["tool"] for item in body["tools"]]
+
+
 def test_agent_and_mcp_use_controlled_tools(client: TestClient):
     response = client.post("/api/assistant", json={"message": "I am 45 minutes late"})
     assert response.status_code == 200
-    assert response.json()["recovery"]["disruption_minutes"] == 45
-    assert any(item["tool"] == "validate_schedule" for item in response.json()["tools"])
+    body = response.json()
+    assert body["recovery"]["disruption_minutes"] == 45
+    assert capabilities(body) == ["schedule.recover"]
+    assert any("Checking options" in step["label"] for step in body["steps"])
 
     tool = client.post(
         "/api/mcp/call",
@@ -136,7 +142,7 @@ def test_assistant_collects_task_slots_and_confirms_before_write(client: TestCli
     first = client.post("/api/assistant", json={"message": "Create a task", "session_id": session})
     assert first.status_code == 200
     assert first.json()["state"] == "asking"
-    assert first.json()["pending_action"]["intent"] == "task.create"
+    assert first.json()["pending_action"]["intent"] == "tasks.create"
 
     second = client.post("/api/assistant", json={"message": "Prepare the demo", "session_id": session})
     assert second.json()["state"] == "asking"
@@ -149,7 +155,8 @@ def test_assistant_collects_task_slots_and_confirms_before_write(client: TestCli
 
     final = client.post("/api/assistant", json={"message": "yes", "session_id": session})
     assert final.json()["state"] == "completed"
-    assert any(item["tool"] == "create_task" for item in final.json()["tools"])
+    assert capabilities(final.json()) == ["tasks.create"]
+    assert final.json()["undo"]["action_id"]
     assert any(task["title"] == "Prepare the demo" for task in client.get("/api/tasks").json())
 
 
@@ -162,18 +169,17 @@ def test_assistant_can_cancel_pending_write(client: TestClient):
     assert not any(task["title"] == "Dangerous duplicate" for task in client.get("/api/tasks").json())
 
 
-def test_assistant_uses_structured_model_decision_not_phrase_matching(
+def test_assistant_uses_typed_model_plan_when_configured(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
+    monkeypatch.setattr(main, "planner_enabled", lambda: True)
     monkeypatch.setattr(
         main,
         "call_provider_structured",
         lambda system, prompt: {
-            "intent": "navigate",
+            "goal": "Open the calendar",
+            "steps": [{"capability": "app.navigate", "arguments": {"target": "calendar"}}],
             "confidence": 0.97,
-            "slots": {"target": "calendar"},
-            "response": None,
-            "reasoning_summary": "The user wants the calendar workspace",
         },
     )
     response = client.post(
@@ -181,14 +187,24 @@ def test_assistant_uses_structured_model_decision_not_phrase_matching(
         json={"message": "Beam me into the time grid", "session_id": "model-routing"},
     )
     assert response.status_code == 200
-    assert response.json()["ui_commands"] == [{"type": "navigate", "target": "calendar"}]
-    assert response.json()["agent"] == {
-        "role": "planner",
-        "intent": "navigate",
-        "confidence": 0.97,
-        "source": "model",
-        "max_steps": 6,
-    }
+    body = response.json()
+    assert body["ui_commands"] == [{"type": "navigate", "target": "calendar"}]
+    assert body["planner"] == "model"
+    assert "agent" not in body
+
+
+def test_model_plan_with_unknown_capability_falls_back_to_rules(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(main, "planner_enabled", lambda: True)
+    monkeypatch.setattr(
+        main,
+        "call_provider_structured",
+        lambda system, prompt: {"goal": "x", "steps": [{"capability": "tasks.delete_everything", "arguments": {}}]},
+    )
+    body = client.post("/api/assistant", json={"message": "What is at risk?", "session_id": "bad-model"}).json()
+    assert body["planner"] == "rules"
+    assert capabilities(body) == ["schedule.assess"]
 
 
 def test_assistant_risk_tool_handles_grounded_api_shape(client: TestClient):
@@ -196,9 +212,7 @@ def test_assistant_risk_tool_handles_grounded_api_shape(client: TestClient):
         "/api/assistant", json={"message": "What is at risk?", "session_id": "risk-test"}
     )
     assert response.status_code == 200
-    assert response.json()["tools"] == [
-        {"tool": "check_deadline_risks", "status": "complete"}
-    ]
+    assert response.json()["tools"] == [{"tool": "schedule.assess", "status": "complete"}]
 
 
 def test_clear_command_interrupts_incomplete_task_dialogue(client: TestClient):
@@ -214,10 +228,9 @@ def test_clear_command_interrupts_incomplete_task_dialogue(client: TestClient):
         json={"message": "What is at risk?", "session_id": session},
     )
     assert risks.status_code == 200
-    assert risks.json()["tools"] == [
-        {"tool": "check_deadline_risks", "status": "complete"}
-    ]
+    assert risks.json()["tools"] == [{"tool": "schedule.assess", "status": "complete"}]
     assert risks.json()["pending_action"] is None
+    assert "say continue" in risks.json()["say"]
 
 
 def test_feasibility_question_is_not_misclassified_as_task_completion(client: TestClient):
@@ -226,9 +239,8 @@ def test_feasibility_question_is_not_misclassified_as_task_completion(client: Te
         json={"message": "Can I still finish everything today?", "session_id": "feasibility-regression"},
     )
     body = response.json()
-    assert body["agent"]["intent"] == "assess_feasibility"
-    assert [item["tool"] for item in body["tools"]] == ["get_day_schedule", "check_deadline_risks"]
-    assert "full task name" not in body["say"]
+    assert capabilities(body) == ["schedule.assess"]
+    assert not any(task["status"] == "done" for task in client.get("/api/tasks").json())
 
 
 def test_task_parser_does_not_turn_tomorrow_into_morrow(client: TestClient):
@@ -251,7 +263,7 @@ def test_interrupted_task_draft_can_be_resumed_with_context(client: TestClient):
     resumed = client.post("/api/assistant", json={"message": "continue", "session_id": session}).json()
     assert resumed["state"] == "asking"
     assert resumed["say"] == "What task should I create?"
-    assert resumed["pending_action"]["intent"] == "task.create"
+    assert resumed["pending_action"]["intent"] == "tasks.create"
 
 
 def test_natural_timed_task_fills_multiple_slots_in_one_turn(client: TestClient):
@@ -286,8 +298,8 @@ def test_assistant_history_restores_message_metadata(client: TestClient):
     client.post("/api/assistant", json={"message": "Plan my day", "session_id": session})
     history = client.get(f"/api/assistant/history?session_id={session}").json()["messages"]
     assert [message["role"] for message in history] == ["user", "assistant"]
-    assert history[-1]["meta"]["intent"] == "get_schedule"
-    assert history[-1]["tools"] == [{"tool": "get_day_schedule", "status": "complete"}]
+    assert history[-1]["meta"]["capabilities"] == ["calendar.inspect"]
+    assert history[-1]["tools"] == [{"tool": "calendar.inspect", "status": "complete"}]
 
 
 def test_model_catalog_and_persistent_selection(client: TestClient, monkeypatch: pytest.MonkeyPatch):
