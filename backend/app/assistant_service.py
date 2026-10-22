@@ -11,8 +11,7 @@ from app.agents.contracts import CreateProjectArgs, CreateTaskArgs, CompleteTask
 
 
 ROUTES = {
-    "dashboard": ("dashboard", "dashboard", "home"),
-    "day": ("day", "my day", "today", "schedule"),
+    "dashboard": ("dashboard", "home", "my day", "today", "schedule"),
     "calendar": ("calendar", "calender"),
     "tasks": ("tasks", "task list", "projects", "project list"),
     "assistant": ("assistant", "chat", "plan b"),
@@ -274,7 +273,7 @@ class AssistantService:
             result = self._response(say, tools=[{"tool": "check_deadline_risks", "status": "complete"}])
         elif intent == "get_schedule":
             day = self.registry.execute("get_day_schedule")
-            result = self._response(f"You have {len(day['blocks'])} scheduled blocks and {day['metrics']['free_buffer_minutes']} minutes of free buffer.", commands=[{"type": "navigate", "target": "day"}], tools=[{"tool": "get_day_schedule", "status": "complete"}])
+            result = self._response(f"You have {len(day['blocks'])} scheduled blocks and {day['metrics']['free_buffer_minutes']} minutes of free buffer.", commands=[{"type": "navigate", "target": "dashboard"}], tools=[{"tool": "get_day_schedule", "status": "complete"}])
         else:
             # The planner is also the conversational agent and must provide the reply
             # in its structured decision. Avoid a second LLM call on fallback/timeouts.

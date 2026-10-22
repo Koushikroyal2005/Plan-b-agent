@@ -59,7 +59,7 @@ class AgentPlanner:
             return AgentDecision(intent="back", confidence=1)
         if lower in {"help", "what can you do"}:
             return AgentDecision(intent="help", confidence=1)
-        page_aliases = {"home": "dashboard", "today": "day", "schedule": "day", "calender": "calendar", "preferences": "settings", "analytics": "patterns", "insights": "patterns", "chat": "assistant"}
+        page_aliases = {"home": "dashboard", "today": "dashboard", "schedule": "dashboard", "my day": "dashboard", "calender": "calendar", "preferences": "settings", "analytics": "patterns", "insights": "patterns", "chat": "assistant"}
         if re.search(r"\b(open|show|go|move|navigate|take me)\b", lower):
             target = next((page for page in self.pages if page in lower), None)
             target = target or next((page for alias, page in page_aliases.items() if alias in lower), None)

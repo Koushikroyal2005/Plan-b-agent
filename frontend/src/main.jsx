@@ -16,9 +16,7 @@ import {
   Columns3,
   Command,
   History,
-  Home,
   FolderKanban,
-  LayoutDashboard,
   LayoutList,
   ListFilter,
   ListTodo,
@@ -152,9 +150,9 @@ function App() {
   };
   const runUiCommands = (commands = []) => {
     commands.forEach((command) => {
-      if (command.type === "navigate" && navigation.some((item) => item.id === command.target)) {
+      if (command.type === "navigate" && navigation.some((item) => item.id === command.target || (command.target === "day" && item.id === "dashboard"))) {
         previousView.current = view;
-        setView(command.target);
+        setView(command.target === "day" ? "dashboard" : command.target);
       } else if (command.type === "back") {
         setView(previousView.current || "dashboard");
       } else if (command.type === "open_modal" && command.target === "task") {
@@ -270,7 +268,7 @@ function App() {
       if (accepted && item.id === "protect-deadline") createRecovery();
       else if (accepted && item.id === "focus-window") setView("calendar");
       else if (accepted && item.id === "buffer-rule") setView("settings");
-      else if (accepted && item.id === "plan-healthy") setView("day");
+      else if (accepted && item.id === "plan-healthy") setView("dashboard");
       notify(
         accepted ? "Suggestion accepted" : "Suggestion dismissed",
         accepted ? item.action : "Plan B will remember this response.",
@@ -282,32 +280,22 @@ function App() {
 
   const views = {
     dashboard: (
-      <DashboardView
+      <TodayView
         day={data.day}
         tasks={data.tasks}
         projects={data.projects}
         opportunities={data.opportunities}
-        messages={messages}
-        sendMessage={sendMessage}
         provider={data.provider}
         openChat={() => setView("assistant")}
         openCalendar={() => setView("calendar")}
         openTasks={() => setView("tasks")}
         onAdd={() => setTaskModal({})}
-        displayName={data.preferences?.display_name || "there"}
-        activityFeed={data.activityFeed}
-      />
-    ),
-    day: (
-      <DayView
-        day={data.day}
-        opportunities={data.opportunities}
-        onRespond={respondOpportunity}
-        onAdd={() => setTaskModal({})}
         onRecovery={createRecovery}
         onRefresh={refresh}
+        onRespond={respondOpportunity}
         navigate={setView}
         displayName={data.preferences?.display_name || "there"}
+        activityFeed={data.activityFeed}
       />
     ),
     calendar: (
@@ -746,314 +734,33 @@ function LegacyDashboardView({
     </View>
   );
 }
-function DashboardView({
+function TodayView({
   day,
   tasks,
   projects,
   opportunities,
-  messages,
-  sendMessage,
   provider,
   openChat,
   openCalendar,
   openTasks,
   onAdd,
+  onRecovery,
+  onRefresh,
+  onRespond,
+  navigate,
   displayName,
   activityFeed = [],
 }) {
-  const [input, setInput] = useState("");
-  const [showAllActivity, setShowAllActivity] = useState(false);
-  const { supported, listening, toggle } = useSpeechRecognition({
-    language: "en-IN",
-    onTranscript: (transcript) => sendMessage(transcript),
-  });
-  const open = tasks.filter((task) => task.status === "open");
-  const done = tasks.filter((task) => task.status === "done");
-  const focusMinutes =
-    day?.blocks
-      ?.filter((block) => block.kind === "focus" || block.kind === "risk")
-      .reduce((sum, block) => sum + block.minutes, 0) || 0;
-  const planDate = day?.date
-    ? new Date(`${day.date}T12:00:00`).toLocaleDateString([], {
-        month: "long",
-        day: "numeric",
-      })
-    : "today";
-  const visibleActivity = showAllActivity
-    ? activityFeed
-    : activityFeed.slice(0, 3);
-  const submit = () => {
-    if (!input.trim()) return;
-    sendMessage(input);
-    setInput("");
-  };
-  const quick = [
-    "Summarize today",
-    "Create a recovery plan",
-    "What is at risk?",
-    "Plan my next focus block",
-  ];
-  return (
-    <View id="dashboard">
-      <div className="screen4-head">
-        <div>
-          <h1>Good morning, {displayName}</h1>
-          <p>Your day, projects and planning assistant in one place.</p>
-        </div>
-        <div className="provider-live">
-          <span />
-          {provider?.configured
-            ? `${provider.provider} connected`
-            : "Deterministic mode"}
-        </div>
-      </div>
-      <div className="dashboard-metrics screen4-metrics">
-        <DashboardMetric
-          icon={<ListTodo size={17} />}
-          tone="violet"
-          label="Tasks today"
-          value={open.length}
-          note={`${day?.metrics?.deadlines_today || 0} due today`}
-        />
-        <DashboardMetric
-          icon={<Clock3 size={17} />}
-          tone="amber"
-          label="In progress"
-          value={day?.blocks?.length || 0}
-          note="scheduled blocks"
-        />
-        <DashboardMetric
-          icon={<Check size={17} />}
-          tone="green"
-          label="Completed"
-          value={done.length}
-          note={`${tasks.length ? Math.round((done.length / tasks.length) * 100) : 0}% completion`}
-        />
-        <DashboardMetric
-          icon={<Target size={17} />}
-          tone="blue"
-          label="Focus time"
-          value={`${Math.floor(focusMinutes / 60)}h ${focusMinutes % 60}m`}
-          note={`${day?.metrics?.confidence || 0}% plan confidence`}
-        />
-      </div>
-      <div className="screen4-layout">
-        <div className="panel dashboard-chat-card">
-          <div className="dashboard-chat-top">
-            <div>
-              <span className="assistant-badge">
-                <Sparkles size={16} />
-              </span>
-              <b>Plan B Assistant</b>
-              <small>
-                {provider?.configured
-                  ? "Model connected · approval required"
-                  : "Deterministic planner · approval required"}
-              </small>
-            </div>
-            <button onClick={openChat} title="Open full chat">
-              <ArrowRight size={16} />
-            </button>
-          </div>
-          <div className="dashboard-chat-body">
-            <div className="assistant-profile">
-              <span>
-                <Sparkles size={24} />
-              </span>
-              <h2>Let’s make today work.</h2>
-              <p>
-                I can inspect your plan, explain risks and prepare changes for
-                your approval.
-              </p>
-            </div>
-            <div className="dashboard-message-list">
-              {messages.slice(-5).map((message, index) => (
-                <div className={`dash-message ${message.role}`} key={index}>
-                  <span>{message.role === "assistant" ? "P" : "KS"}</span>
-                  <p>{message.text}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="dashboard-quick">
-            {quick.map((item) => (
-              <button onClick={() => sendMessage(item)} key={item}>
-                <Sparkles size={12} />
-                {item}
-              </button>
-            ))}
-          </div>
-          <div className="dashboard-composer">
-            <button type="button" onClick={onAdd} title="Add task">
-              <Plus size={18} />
-            </button>
-            <input
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && submit()}
-              placeholder="Ask Plan B anything about your schedule…"
-            />
-            <button
-              type="button"
-              className="composer-mic"
-              title={
-                supported
-                  ? listening
-                    ? "Stop listening"
-                    : "Speak a message"
-                  : "Voice input is not available in this browser"
-              }
-              onClick={() => {
-                if (!supported) return;
-                toggle();
-              }}
-            >
-              <Mic size={17} />
-            </button>
-            <button className="composer-send" onClick={submit}>
-              <ArrowRight size={17} />
-            </button>
-          </div>
-        </div>
-        <aside className="screen4-rail">
-          <div className="panel rail-card rail-calendar">
-            <div className="rail-head">
-              <div>
-                <b>
-                  <CalendarDays size={15} /> Calendar
-                </b>
-                <small>Today · {planDate}</small>
-              </div>
-              <button onClick={openCalendar}>
-                View calendar <ChevronRight size={13} />
-              </button>
-            </div>
-            {day?.blocks?.slice(0, 3).map((block, index) => (
-              <div className="rail-event" key={`${block.task_id}-${index}`}>
-                <i className={`tone-${index}`} />
-                <div>
-                  <b>{block.title}</b>
-                  <small>{block.start}</small>
-                </div>
-                <span>{block.minutes}m</span>
-              </div>
-            ))}
-            <button className="rail-action" onClick={openCalendar}>
-              Open schedule
-            </button>
-          </div>
-          <div className="panel rail-card">
-            <div className="rail-head">
-              <b>
-                <FolderKanban size={15} /> Project progress
-              </b>
-              <button type="button" onClick={openTasks}>
-                View all
-              </button>
-            </div>
-            {projects.slice(0, 3).map((project) => (
-              <div className="rail-project" key={project.id}>
-                <header>
-                  <b>{project.name}</b>
-                  <span>{project.progress}%</span>
-                </header>
-                <i>
-                  <em
-                    style={{
-                      width: `${project.progress}%`,
-                      background: project.color,
-                    }}
-                  />
-                </i>
-              </div>
-            ))}
-          </div>
-          <div className="panel rail-card">
-            <div className="rail-head">
-              <b>
-                <Activity size={15} /> Activity feed
-              </b>
-              <button
-                type="button"
-                onClick={() => setShowAllActivity((current) => !current)}
-              >
-                {showAllActivity ? "Show less" : "View all"}
-              </button>
-            </div>
-            {visibleActivity.length ? (
-              visibleActivity.map((item) => (
-                <Feed
-                  key={item.id}
-                  icon={<Activity size={13} />}
-                  title={item.type.replaceAll("_", " ")}
-                  detail={item.detail}
-                />
-              ))
-            ) : (
-              <Feed
-                icon={<Activity size={13} />}
-                title="No activity yet"
-                detail="Task, project and recovery actions will appear here"
-              />
-            )}
-          </div>
-          <div className="panel rail-suggestion">
-            <Sparkles size={18} />
-            <div>
-              <b>AI suggestion</b>
-              <p>
-                {opportunities[0]?.description ||
-                  "Your current schedule is stable."}
-              </p>
-            </div>
-            <button onClick={openChat}>Discuss now</button>
-          </div>
-        </aside>
-      </div>
-    </View>
-  );
-}
-function DashboardMetric({ icon, tone, label, value, note }) {
-  return (
-    <div className={`dashboard-stat ${tone}`}>
-      <header>
-        <span>{icon}</span>
-        <b>{label}</b>
-      </header>
-      <strong>{value}</strong>
-      <small>{note}</small>
-    </div>
-  );
-}
-function Feed({ icon, title, detail }) {
-  return (
-    <div className="feed-row">
-      <span>{icon}</span>
-      <div>
-        <b>{title}</b>
-        <small>{detail}</small>
-      </div>
-    </div>
-  );
-}
-
-function DayView({
-  day,
-  opportunities,
-  onRespond,
-  onAdd,
-  onRecovery,
-  onRefresh,
-  navigate,
-  displayName,
-}) {
   const [filter, setFilter] = useState("all");
+  const [showAllActivity, setShowAllActivity] = useState(false);
   if (!day) return null;
   const metrics = day.metrics || {};
   const risk = day.risks?.[0];
-  const filtered = opportunities.filter(
-    (item) => filter === "all" || item.kind === filter,
-  );
+  const open = tasks.filter((task) => task.status === "open");
+  const focusMinutes =
+    day.blocks
+      ?.filter((block) => block.kind === "focus" || block.kind === "risk")
+      .reduce((sum, block) => sum + block.minutes, 0) || 0;
   const headingDate = day.date
     ? new Date(`${day.date}T12:00:00`)
         .toLocaleDateString([], {
@@ -1064,8 +771,12 @@ function DayView({
         })
         .toUpperCase()
     : "TODAY";
+  const filtered = opportunities.filter(
+    (item) => filter === "all" || item.kind === filter,
+  );
+  const visibleActivity = showAllActivity ? activityFeed : activityFeed.slice(0, 3);
   return (
-    <View id="day">
+    <View id="dashboard">
       <div className="hero">
         <div>
           <Eyebrow>{headingDate}</Eyebrow>
@@ -1077,7 +788,7 @@ function DayView({
               ? "Your tasks or settings changed after the last approved plan, so this timeline was rebuilt."
               : day.schedule_source === "approved_plan"
                 ? "This timeline is the recovery plan you approved."
-                : "Your plan is calculated from real durations, deadlines, fixed events and buffers."}
+                : "Your tasks, risks and suggestions are calculated for today."}
           </p>
         </div>
         <div className="hero-buttons">
@@ -1087,6 +798,9 @@ function DayView({
           <Button onClick={() => navigate("recovery")}>
             <History size={14} /> History
           </Button>
+          <Button onClick={openCalendar}>
+            <CalendarDays size={14} /> Calendar
+          </Button>
           <Button onClick={() => onRecovery()}>
             <Zap size={14} /> Something changed
           </Button>
@@ -1095,9 +809,7 @@ function DayView({
           </Button>
         </div>
       </div>
-      <div
-        className={`risk-banner ${day.status === "on_track" ? "on-track" : ""}`}
-      >
+      <div className={`risk-banner ${day.status === "on_track" ? "on-track" : ""}`}>
         <span>{day.status === "on_track" ? "✓" : "!"}</span>
         <div>
           <b>
@@ -1113,33 +825,34 @@ function DayView({
           See recovery options <ArrowRight size={14} />
         </button>
       </div>
-      <div className="metrics">
-        <Metric
-          label="Active predictions"
-          value={opportunities.length}
-          note="live schedule signals"
+      <div className="dashboard-metrics screen4-metrics">
+        <DashboardMetric
+          icon={<ListTodo size={17} />}
+          tone="violet"
+          label="Tasks today"
+          value={open.length}
+          note={`${metrics.deadlines_today || 0} due today`}
         />
-        <Metric
-          label="Suggested actions"
-          value={
-            opportunities.filter((item) => item.kind !== "prediction").length
-          }
-          note="awaiting your choice"
+        <DashboardMetric
+          icon={<Clock3 size={17} />}
+          tone="amber"
+          label="Focus time"
+          value={`${Math.floor(focusMinutes / 60)}h ${focusMinutes % 60}m`}
+          note={`${day.blocks?.length || 0} scheduled blocks`}
         />
-        <Metric
-          label="Goals on track"
-          value={Math.max(0, 3 - metrics.risky_tasks)}
-          unit="/3"
-          note="based on current slack"
-          good
+        <DashboardMetric
+          icon={<Target size={17} />}
+          tone="blue"
+          label="Free buffer"
+          value={`${metrics.free_buffer_minutes || 0}m`}
+          note={`${metrics.confidence || 0}% plan confidence`}
         />
-        <Metric
-          label="Upcoming events"
-          value={
-            day.blocks?.filter((block) => block.kind === "fixed").length || 0
-          }
-          note={`${metrics.free_buffer_minutes || 0} min free buffer`}
-          warning={day.status !== "on_track"}
+        <DashboardMetric
+          icon={<Check size={17} />}
+          tone="green"
+          label="Fixed events"
+          value={day.blocks?.filter((block) => block.kind === "fixed").length || 0}
+          note={provider?.configured ? `${provider.provider} connected` : "Deterministic planner"}
         />
       </div>
       <div className="day-grid">
@@ -1152,7 +865,7 @@ function DayView({
         </div>
         <div className="panel prediction-panel">
           <PanelHeading
-            title="Proactive predictions"
+            title="Suggestions"
             sub={`${opportunities.length} current signals`}
           />
           <div className="prediction-tabs">
@@ -1185,14 +898,93 @@ function DayView({
               </footer>
             </div>
           ))}
-          {!filtered.length && (
-            <p className="muted">No signals in this category.</p>
+          {!filtered.length && <p className="muted">No signals in this category.</p>}
+        </div>
+      </div>
+      <div className="today-lower">
+        <div className="panel rail-card">
+          <div className="rail-head">
+            <b>
+              <FolderKanban size={15} /> Project progress
+            </b>
+            <button type="button" onClick={openTasks}>
+              View all
+            </button>
+          </div>
+          {projects.slice(0, 3).map((project) => (
+            <div className="rail-project" key={project.id}>
+              <header>
+                <b>{project.name}</b>
+                <span>{project.progress}%</span>
+              </header>
+              <i>
+                <em style={{ width: `${project.progress}%`, background: project.color }} />
+              </i>
+            </div>
+          ))}
+        </div>
+        <div className="panel rail-card">
+          <div className="rail-head">
+            <b>
+              <Activity size={15} /> Activity
+            </b>
+            <button type="button" onClick={() => setShowAllActivity((current) => !current)}>
+              {showAllActivity ? "Show less" : "View all"}
+            </button>
+          </div>
+          {visibleActivity.length ? (
+            visibleActivity.map((item) => (
+              <Feed
+                key={item.id}
+                icon={<Activity size={13} />}
+                title={item.type.replaceAll("_", " ")}
+                detail={item.detail}
+              />
+            ))
+          ) : (
+            <Feed
+              icon={<Activity size={13} />}
+              title="No activity yet"
+              detail="Task, project and recovery actions will appear here"
+            />
           )}
+          <div className="rail-suggestion">
+            <Sparkles size={18} />
+            <div>
+              <b>Assistant</b>
+              <p>{opportunities[0]?.description || "Your current schedule is stable."}</p>
+            </div>
+            <button onClick={openChat}>Discuss now</button>
+          </div>
         </div>
       </div>
     </View>
   );
 }
+function DashboardMetric({ icon, tone, label, value, note }) {
+  return (
+    <div className={`dashboard-stat ${tone}`}>
+      <header>
+        <span>{icon}</span>
+        <b>{label}</b>
+      </header>
+      <strong>{value}</strong>
+      <small>{note}</small>
+    </div>
+  );
+}
+function Feed({ icon, title, detail }) {
+  return (
+    <div className="feed-row">
+      <span>{icon}</span>
+      <div>
+        <b>{title}</b>
+        <small>{detail}</small>
+      </div>
+    </div>
+  );
+}
+
 function Metric({ label, value, unit, note, good, warning }) {
   return (
     <div className="metric">

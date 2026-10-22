@@ -1,7 +1,13 @@
-.day-grid {
+.day-grid,
+.today-lower {
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.75fr);
   gap: 18px;
+}
+.today-lower {
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  margin-top: 18px;
+  align-items: start;
 }
 .prediction-panel {
   padding: 24px;
@@ -777,6 +783,7 @@
 }
 @media (max-width: 1100px) {
   .day-grid,
+  .today-lower,
   .calendar-layout,
   .mcp-layout {
     grid-template-columns: 1fr;
@@ -804,6 +811,7 @@
     overflow-x: auto;
   }
   .day-grid,
+  .today-lower,
   .analytics-grid {
     grid-template-columns: 1fr;
   }
@@ -2191,6 +2199,10 @@ body {
 }
 .screen4-rail .feed-row small {
   font-size: 7px;
+}
+.today-lower .rail-suggestion {
+  margin-top: 14px;
+  border-radius: 14px;
 }
 .rail-suggestion {
   display: flex;
