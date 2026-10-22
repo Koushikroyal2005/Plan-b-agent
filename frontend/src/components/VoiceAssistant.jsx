@@ -14,6 +14,7 @@ const suggestionsByView = {
 export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboard", onSend, onOpenChat, onDismiss }) {
   const [expanded, setExpanded] = useState(false);
   const [liveTranscript, setLiveTranscript] = useState("");
+  const [draft, setDraft] = useState("");
   const wasSpeaking = useRef(false);
   const greetingPending = useRef(false);
   const voiceEnabled = preferences?.voice_output !== false;
@@ -24,12 +25,12 @@ export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboa
   const onTranscript = useCallback(
     (value) => {
       setExpanded(true);
-      setLiveTranscript("");
-      onSend(value, "voice");
+      setLiveTranscript(value);
+      setDraft(value);
     },
-    [onSend],
+    [],
   );
-  const { listening, supported, toggle, stop } = useSpeechRecognition({
+  const { listening, supported, toggle, stop, cancel: cancelRecognition, reset } = useSpeechRecognition({
     language: preferences?.language || "en-IN",
     onTranscript,
     onInterim: setLiveTranscript,
@@ -69,10 +70,20 @@ export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboa
     toggle();
   };
   const cancel = () => {
-    stop();
+    cancelRecognition();
+    setDraft("");
+    setLiveTranscript("");
     stopSpeaking();
     if (turn?.state === "asking" || turn?.state === "confirming") onSend("cancel", "voice");
     else onDismiss?.();
+  };
+  const submitDraft = () => {
+    const message = draft.trim();
+    if (!message) return;
+    onSend(message, "voice");
+    setDraft("");
+    setLiveTranscript("");
+    reset();
   };
   const status = busy ? "Thinking" : speaking ? "Speaking" : listening ? "Listening" : turn?.state === "confirming" ? "Needs confirmation" : "Ready";
 
@@ -86,10 +97,15 @@ export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboa
             <button aria-label="Close assistant" onClick={() => setExpanded(false)}><X size={16} /></button>
           </header>
           <p>{turn?.say || "Tell me what you want to do in Plan B."}</p>
-          {(listening || liveTranscript) && (
+          {(listening || liveTranscript || draft) && (
             <div className="voice-wave-wrap">
-              <div className="voice-wave" aria-hidden="true">{[1, 2, 3, 4, 5, 6, 7].map((bar) => <i key={bar} />)}</div>
-              <span>{liveTranscript || "Listening…"}</span>
+              {listening && <div className="voice-wave" aria-hidden="true">{[1, 2, 3, 4, 5, 6, 7].map((bar) => <i key={bar} />)}</div>}
+              <textarea
+                aria-label="Voice transcript"
+                value={draft || liveTranscript}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="Listening… speak naturally, then press Stop"
+              />
             </div>
           )}
           {turn?.pending_action && (
@@ -99,11 +115,14 @@ export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboa
             </div>
           )}
           <div className="voice-actions">
+            {listening && <button className="confirm" onClick={stop}><Check size={14} /> Finish speaking</button>}
+            {!listening && draft && <button className="confirm" onClick={submitDraft}><Check size={14} /> Send transcript</button>}
+            {!listening && draft && <button onClick={() => { setDraft(""); setLiveTranscript(""); reset(); }}>Discard</button>}
             {turn?.requires_confirmation && <button className="confirm" onClick={() => onSend("yes", "voice")}><Check size={14} /> Confirm</button>}
             {turn?.requires_confirmation && <button onClick={() => onSend("cancel", "voice")}>Cancel</button>}
             <button onClick={onOpenChat}>Open chat</button>
           </div>
-          {!turn?.requires_confirmation && !listening && (
+          {!turn?.requires_confirmation && !listening && !draft && (
             <div className="voice-suggestions">
               {(suggestionsByView[currentView] || suggestionsByView.dashboard).map((suggestion) => (
                 <button key={suggestion} onClick={() => onSend(suggestion, "voice")}>{suggestion}</button>

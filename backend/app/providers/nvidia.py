@@ -92,7 +92,7 @@ class NVIDIAProvider:
             [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
             model=model,
             temperature=0.1,
-            max_tokens=900,
+            max_tokens=320,
             json_mode=True,
         )
         fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.S | re.I)

@@ -115,4 +115,18 @@ describe("CalendarWorkspace", () => {
       "Calendar schedule changed",
     );
   });
+
+  it("creates a prefilled task by clicking an empty calendar time", async () => {
+    const user = userEvent.setup();
+    const props = renderCalendar();
+    const emptyDay = document.querySelectorAll(".timeline-day")[1];
+    await user.click(emptyDay);
+    expect(props.onAdd).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fixed_start: expect.stringMatching(/^2026-10-20T\d{2}:\d{2}$/),
+        duration_minutes: 60,
+        flexibility: "fixed",
+      }),
+    );
+  });
 });
