@@ -259,6 +259,7 @@ export function CalendarWorkspace({
             date={selectedDate}
             events={events.filter((event) => event.date === selectedDate)}
             onEvent={setSelectedEvent}
+              onCreate={onAdd}
           />
           <div className="cal-agent-card">
             <span>
@@ -478,6 +479,24 @@ function Breakdown({ events }) {
 }
 
 function TimelineBoard({ days, events, onOpenDay, onEvent, onAdd }) {
+  const createAt = (event, date) => {
+    if (event.target.closest(".cal-event") || event.target.closest(".add-slot")) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const offset = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+    const rawMinutes = 480 + (offset / 64) * 60;
+    const startMinutes = Math.max(480, Math.min(1260, Math.round(rawMinutes / 15) * 15));
+    const endMinutes = Math.min(1435, startMinutes + 60);
+    const time = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+    const dateKey = keyOf(date);
+    onAdd({
+      fixed_start: `${dateKey}T${time(startMinutes)}`,
+      deadline: `${dateKey}T${time(endMinutes)}`,
+      duration_minutes: 60,
+      flexibility: "fixed",
+      priority: "medium",
+      splittable: false,
+    });
+  };
   return (
     <div className="timeline-board">
       <div className="timeline-head">
@@ -507,7 +526,7 @@ function TimelineBoard({ days, events, onOpenDay, onEvent, onAdd }) {
           {days.map((date) => {
             const key = keyOf(date);
             return (
-              <div className="timeline-day" key={key}>
+              <div className="timeline-day" key={key} onClick={(event) => createAt(event, date)} title="Click an empty time to create a task">
                 {HOURS.map((hour) => (
                   <i className="hour-line" key={hour} />
                 ))}
@@ -520,7 +539,7 @@ function TimelineBoard({ days, events, onOpenDay, onEvent, onAdd }) {
                         "--top": `${Math.max(0, ((event.startMinutes - 480) / 60) * 64)}px`,
                         "--height": `${Math.max(42, (event.duration / 60) * 64 - 4)}px`,
                       }}
-                      onClick={() => onEvent(event)}
+                      onClick={(click) => { click.stopPropagation(); onEvent(event); }}
                       key={`${event.id}-${event.startMinutes}`}
                     >
                       <b>{event.title}</b>
@@ -531,7 +550,7 @@ function TimelineBoard({ days, events, onOpenDay, onEvent, onAdd }) {
                       <span>{event.label || event.kind}</span>
                     </button>
                   ))}
-                <button className="add-slot" onClick={onAdd} title="Add event">
+                <button className="add-slot" onClick={(click) => { click.stopPropagation(); const dateKey = keyOf(date); onAdd({ fixed_start: `${dateKey}T09:00`, deadline: `${dateKey}T10:00`, duration_minutes: 60, flexibility: "fixed", priority: "medium", splittable: false }); }} title="Add event">
                   <Plus size={17} />
                 </button>
               </div>
@@ -550,6 +569,7 @@ function MonthBoard({
   onSelect,
   onOpenDay,
   onEvent,
+  onCreate,
 }) {
   const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1, 12);
   const offset = (first.getDay() + 6) % 7;
@@ -570,11 +590,13 @@ function MonthBoard({
           return (
             <section
               className={`${date.getMonth() !== anchor.getMonth() ? "outside" : ""} ${selectedDate === key ? "selected" : ""}`}
+              onClick={() => onCreate({ deadline: `${key}T18:00`, duration_minutes: 60, flexibility: "flexible", priority: "medium", splittable: true })}
               key={key}
             >
               <button
                 className="month-number"
-                onClick={() => {
+                onClick={(click) => {
+                  click.stopPropagation();
                   onSelect(date);
                   onOpenDay(date);
                 }}
@@ -584,7 +606,7 @@ function MonthBoard({
               {items.slice(0, 3).map((event) => (
                 <button
                   className={`month-event ${event.tone}`}
-                  onClick={() => onEvent(event)}
+                  onClick={(click) => { click.stopPropagation(); onEvent(event); }}
                   key={event.id}
                 >
                   {clock(event.startMinutes)} {event.title}

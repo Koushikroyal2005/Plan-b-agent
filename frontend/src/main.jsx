@@ -73,6 +73,9 @@ function App() {
   const [toast, setToast] = useState(null);
   const [assistantTurn, setAssistantTurn] = useState(null);
   const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantQueueSize, setAssistantQueueSize] = useState(0);
+  const assistantBusyRef = useRef(false);
+  const assistantQueueRef = useRef([]);
   const previousView = useRef("dashboard");
   const sessionId = useMemo(() => {
     const existing = window.localStorage.getItem("planb-assistant-session");
@@ -131,6 +134,15 @@ function App() {
   useEffect(() => {
     refresh();
   }, []);
+  useEffect(() => {
+    let active = true;
+    api(`/assistant/history?session_id=${encodeURIComponent(sessionId)}&limit=80`)
+      .then((result) => {
+        if (active && result.messages?.length) setMessages(result.messages);
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [sessionId]);
 
   const createRecovery = async (
     minutes = 60,
@@ -167,9 +179,23 @@ function App() {
       }
     });
   };
-  const sendMessage = async (text, channel = "text") => {
+  const sendMessage = async (text, channel = "text", queuedEntry = null) => {
     if (!text.trim()) return;
-    setMessages((items) => [...items, { role: "user", text }]);
+    const entry = queuedEntry || {
+      id: window.crypto?.randomUUID?.() || `message-${Date.now()}`,
+      text,
+      channel,
+    };
+    if (!queuedEntry) {
+      setMessages((items) => [...items, { id: entry.id, role: "user", text, status: assistantBusyRef.current ? "Queued" : "Sending" }]);
+    }
+    if (assistantBusyRef.current) {
+      assistantQueueRef.current.push(entry);
+      setAssistantQueueSize(assistantQueueRef.current.length);
+      return;
+    }
+    assistantBusyRef.current = true;
+    setMessages((items) => items.map((item) => item.id === entry.id ? { ...item, status: "Sent" } : item));
     setAssistantBusy(true);
     try {
       const result = await api("/assistant", {
@@ -186,7 +212,7 @@ function App() {
       });
       setMessages((items) => [
         ...items,
-        { role: "assistant", text: result.message },
+        { id: result.turn_id, role: "assistant", text: result.message, meta: result.agent, tools: result.tools || [] },
       ]);
       setActivity(result.tools || []);
       if (result.recovery) setRecovery(result.recovery);
@@ -202,7 +228,11 @@ function App() {
       ]);
       setAssistantTurn({ say: `Planning service error: ${error.message}`, state: "failed", channel });
     } finally {
+      assistantBusyRef.current = false;
       setAssistantBusy(false);
+      const next = assistantQueueRef.current.shift();
+      setAssistantQueueSize(assistantQueueRef.current.length);
+      if (next) window.setTimeout(() => sendMessage(next.text, next.channel, next), 0);
     }
   };
   const patchTask = async (taskId, changes) => {
@@ -289,7 +319,7 @@ function App() {
         openChat={() => setView("assistant")}
         openCalendar={() => setView("calendar")}
         openTasks={() => setView("tasks")}
-        onAdd={() => setTaskModal({})}
+        onAdd={(draft = {}) => setTaskModal(draft)}
         onRecovery={createRecovery}
         onRefresh={refresh}
         onRespond={respondOpportunity}
@@ -343,6 +373,8 @@ function App() {
         preferences={data.preferences}
         currentView={view}
         notify={notify}
+        busy={assistantBusy}
+        queueSize={assistantQueueSize}
       />
     ),
     recovery: (
@@ -354,7 +386,7 @@ function App() {
         generate={createRecovery}
       />
     ),
-    patterns: <PatternsView data={data.patterns} projects={data.projects} />,
+    patterns: <PatternsView data={data.patterns} projects={data.projects} onDiscuss={(prompt) => { sendMessage(prompt); setView("assistant"); }} />,
     mcp: <McpView notify={notify} />,
     settings: (
       <>
@@ -397,7 +429,7 @@ function App() {
       </main>
       {taskModal && (
         <TaskModal
-          task={taskModal.id ? taskModal : null}
+          task={taskModal}
           projects={data.projects}
           close={() => setTaskModal(null)}
           onSaved={() => {
@@ -437,14 +469,15 @@ function App() {
         />
       )}
       {toast && <Toast {...toast} />}
-      <VoiceAssistant
+      {view !== "assistant" && <VoiceAssistant
         turn={assistantTurn}
         busy={assistantBusy}
         preferences={data.preferences}
+        currentView={view}
         onSend={sendMessage}
         onOpenChat={() => setView("assistant")}
         onDismiss={() => setAssistantTurn(null)}
-      />
+      />}
     </div>
   );
 }
@@ -551,189 +584,6 @@ const Toast = ({ title, body }) => (
   </div>
 );
 
-function LegacyDashboardView({
-  day,
-  tasks,
-  projects,
-  opportunities,
-  openChat,
-  openCalendar,
-}) {
-  const open = tasks.filter((task) => task.status === "open");
-  const done = tasks.filter((task) => task.status === "done");
-  const focusMinutes =
-    day?.blocks
-      ?.filter((block) => block.kind === "focus" || block.kind === "risk")
-      .reduce((sum, block) => sum + block.minutes, 0) || 0;
-  const today = new Date(2026, 9, 19);
-  const monthStart = new Date(2026, 9, 1);
-  const startOffset = monthStart.getDay();
-  return (
-    <View id="dashboard">
-      <div className="dashboard-welcome">
-        <div>
-          <Eyebrow>MONDAY · OCTOBER 19</Eyebrow>
-          <h1>Welcome back, Koushik</h1>
-          <p>Here is what your day and projects look like right now.</p>
-        </div>
-        <Button primary onClick={openChat}>
-          <Sparkles size={14} /> Ask Plan B
-        </Button>
-      </div>
-      <div className="dashboard-metrics">
-        <Metric
-          label="Tasks today"
-          value={open.length}
-          note={`${day?.metrics?.deadlines_today || 0} deadlines`}
-        />
-        <Metric
-          label="In progress"
-          value={day?.blocks?.length || 0}
-          note="scheduled blocks"
-        />
-        <Metric
-          label="Completed"
-          value={done.length}
-          note={`${tasks.length ? Math.round((done.length / tasks.length) * 100) : 0}% completion rate`}
-          good
-        />
-        <Metric
-          label="Focus time"
-          value={(focusMinutes / 60).toFixed(1)}
-          unit="hrs"
-          note="protected deep work"
-        />
-      </div>
-      <div className="dashboard-layout">
-        <div className="dashboard-main">
-          <div className="panel project-progress">
-            <PanelHeading
-              title="Project progress"
-              sub={`${projects.length} active workspaces`}
-            />
-            {projects.map((project) => (
-              <div className="project-progress-row" key={project.id}>
-                <span style={{ background: project.color }}>
-                  <FolderKanban size={14} />
-                </span>
-                <div>
-                  <b>{project.name}</b>
-                  <small>
-                    {project.completed_count}/{project.task_count} tasks ·{" "}
-                    {project.target_date
-                      ? `due ${new Date(project.target_date).toLocaleDateString([], { month: "short", day: "numeric" })}`
-                      : "ongoing"}
-                  </small>
-                  <i>
-                    <em
-                      style={{
-                        width: `${project.progress}%`,
-                        background: project.color,
-                      }}
-                    />
-                  </i>
-                </div>
-                <strong>{project.progress}%</strong>
-              </div>
-            ))}
-          </div>
-          <div className="panel activity-feed">
-            <PanelHeading
-              title="Activity feed"
-              sub="What changed across your plan"
-            />
-            <Feed
-              icon={<Check size={13} />}
-              title={`${done.length} tasks completed`}
-              detail="Completion data now informs duration estimates"
-            />
-            <Feed
-              icon={<RotateCcw size={13} />}
-              title={`${day?.plan_version || 1} plan versions`}
-              detail="Every applied recovery remains restorable"
-            />
-            <Feed
-              icon={<ShieldCheck size={13} />}
-              title="Constraints checked"
-              detail={`${day?.metrics?.confidence || 0}% schedule confidence`}
-            />
-          </div>
-          <div className="panel dashboard-suggestion">
-            <span>
-              <Sparkles size={18} />
-            </span>
-            <div>
-              <Eyebrow>AI SUGGESTION</Eyebrow>
-              <h2>{opportunities[0]?.title || "Your plan is stable"}</h2>
-              <p>
-                {opportunities[0]?.description ||
-                  "There are no urgent changes to review."}
-              </p>
-            </div>
-            <Button onClick={openChat}>
-              Discuss <ArrowRight size={14} />
-            </Button>
-          </div>
-        </div>
-        <aside className="dashboard-side">
-          <div className="panel mini-calendar">
-            <header>
-              <div>
-                <b>October 2026</b>
-                <small>Today and deadlines</small>
-              </div>
-              <button onClick={openCalendar}>
-                <CalendarDays size={15} />
-              </button>
-            </header>
-            <div className="mini-week">
-              {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
-                <b key={`${d}-${i}`}>{d}</b>
-              ))}
-            </div>
-            <div className="mini-days">
-              {Array.from({ length: 35 }, (_, index) => {
-                const number = index - startOffset + 1;
-                const valid = number > 0 && number <= 31;
-                return (
-                  <button
-                    className={
-                      number === today.getDate()
-                        ? "today"
-                        : tasks.some((task) =>
-                              task.deadline?.startsWith(
-                                `2026-10-${String(number).padStart(2, "0")}`,
-                              ),
-                            )
-                          ? "has-task"
-                          : ""
-                    }
-                    key={index}
-                  >
-                    {valid ? number : ""}
-                  </button>
-                );
-              })}
-            </div>
-            <Button className="wide" onClick={openCalendar}>
-              Open full calendar <ArrowRight size={14} />
-            </Button>
-          </div>
-          <div className="panel upcoming">
-            <PanelHeading title="Upcoming" sub="Next scheduled blocks" />
-            {day?.blocks?.slice(0, 4).map((block) => (
-              <div key={block.task_id}>
-                <span>{block.start}</span>
-                <b>{block.title}</b>
-                <small>{block.label}</small>
-              </div>
-            ))}
-          </div>
-        </aside>
-      </div>
-    </View>
-  );
-}
 function TodayView({
   day,
   tasks,
@@ -954,7 +804,14 @@ function TodayView({
               <b>Assistant</b>
               <p>{opportunities[0]?.description || "Your current schedule is stable."}</p>
             </div>
-            <button onClick={openChat}>Discuss now</button>
+            {opportunities[0] ? (
+              <div className="suggestion-actions">
+                <button onClick={() => onRespond(opportunities[0], false)}>Dismiss</button>
+                <button onClick={() => onRespond(opportunities[0], true)}>{opportunities[0].action}</button>
+              </div>
+            ) : (
+              <button onClick={openChat}>Discuss my plan</button>
+            )}
           </div>
         </div>
       </div>
@@ -1620,9 +1477,14 @@ function AssistantView({
   activity,
   sendMessage,
   preferences,
+  currentView,
   notify,
+  busy,
+  queueSize,
 }) {
   const [input, setInput] = useState("");
+  const [assistantMode, setAssistantMode] = useState("command");
+  const messagesEndRef = useRef(null);
   const { listening, supported, toggle } = useSpeechRecognition({
     language: preferences?.language || "en-IN",
     onTranscript: setInput,
@@ -1639,23 +1501,30 @@ function AssistantView({
           "Voice input unavailable",
           "Use a supported browser or connect Wispr Flow later.",
         );
-  const tools = activity.length
-    ? activity
-    : [
-        { tool: "get_day_schedule", status: "complete" },
-        { tool: "check_deadline_risks", status: "complete" },
-        { tool: "generate_recovery_options", status: "waiting" },
-        { tool: "validate_schedule", status: "waiting" },
-      ];
+  const tools = activity;
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, busy]);
   return (
     <View id="assistant">
       <div className="section-head">
         <div>
           <Eyebrow>YOUR PLANNING COMPANION</Eyebrow>
-          <h1>AI Assistant</h1>
-          <p>The same controlled tools power text, voice and MCP.</p>
+          <h1>Plan B command centre</h1>
+          <p>Talk naturally, preview real actions, and control every planning workflow.</p>
         </div>
         <span className="provider">● Server controlled · approval gated</span>
+      </div>
+      <div className="assistant-modebar">
+        {[
+          ["command", "Command", "Create, move, open or complete"],
+          ["conversation", "Plan together", "Reason through priorities and trade-offs"],
+          ["dictation", "Dictate", "Capture a complete thought before sending"],
+        ].map(([id, label, description]) => (
+          <button className={assistantMode === id ? "active" : ""} onClick={() => setAssistantMode(id)} key={id}>
+            <b>{label}</b><small>{description}</small>
+          </button>
+        ))}
       </div>
       <div className="assistant-layout">
         <div className="panel chat">
@@ -1671,7 +1540,7 @@ function AssistantView({
           </div>
           <div className="messages">
             {messages.map((message, index) => (
-              <div className={`message ${message.role}`} key={index}>
+              <div className={`message ${message.role}`} key={message.id || index}>
                 {message.role === "assistant" && (
                   <span className="message-icon">✦</span>
                 )}
@@ -1679,18 +1548,27 @@ function AssistantView({
                   <p>{message.text}</p>
                   <small>
                     {message.role === "assistant"
-                      ? "Tool-backed response"
-                      : "You · now"}
+                      ? message.meta?.intent
+                        ? `${message.meta.intent.replaceAll("_", " ")} · ${message.meta.source || "planner"}`
+                        : "Plan B"
+                      : message.status || "You · now"}
                   </small>
                 </div>
               </div>
             ))}
+            {busy && (
+              <div className="message assistant pending-message">
+                <span className="message-icon">✦</span>
+                <div><span className="thinking-dots"><i /><i /><i /></span><p>Plan B is checking your request…</p><small>{queueSize ? `${queueSize} more message${queueSize === 1 ? "" : "s"} queued` : "Working now"}</small></div>
+              </div>
+            )}
+            <div ref={messagesEndRef} className="messages-end" />
           </div>
           <div className="suggestions">
             {[
-              "My meeting is running 45 minutes late",
-              "Can I still finish everything today?",
-              "Give me the shortest realistic plan",
+              assistantMode === "command" ? "Create a 45 minute task tomorrow at 10 AM" : "My meeting is running 45 minutes late",
+              assistantMode === "dictation" ? "Capture a detailed task description" : "Can I still finish everything today?",
+              assistantMode === "command" ? "Open my calendar and show conflicts" : "Give me the shortest realistic plan",
             ].map((text) => (
               <button onClick={() => sendMessage(text)} key={text}>
                 {text}
@@ -1698,7 +1576,7 @@ function AssistantView({
             ))}
           </div>
           <div className="composer">
-            <button className={listening ? "listening" : ""} onClick={voice}>
+            <button className={listening ? "listening" : ""} onClick={voice} disabled={busy}>
               <Mic size={17} />
             </button>
             <input
@@ -1709,7 +1587,7 @@ function AssistantView({
                 listening ? "Listening…" : "Tell Plan B what changed…"
               }
             />
-            <button className="send" onClick={submit}>
+            <button className="send" onClick={submit} disabled={!input.trim()}>
               <ArrowRight size={15} />
             </button>
           </div>
@@ -1719,18 +1597,24 @@ function AssistantView({
         </div>
         <div className="panel activity-panel">
           <PanelHeading
-            title="Agent activity"
-            sub="Real operations from the latest turn"
+            title="Execution context"
+            sub={`Currently working from ${currentView || "today"}`}
           />
+          <div className="assistant-context-card">
+            <small>WHAT PLAN B CAN CONTROL</small>
+            <div><span>Tasks</span><span>Calendar</span><span>Projects</span><span>Navigation</span><span>Recovery</span><span>Insights</span></div>
+            <p>Read actions run immediately. Changes are previewed and confirmation-gated.</p>
+          </div>
+          <h3 className="activity-label">Latest tool activity</h3>
           <div className="activities">
-            {tools.map((item) => (
+            {tools.length ? tools.map((item) => (
               <ActivityItem
-                key={item.tool}
+                key={`${item.tool}-${item.status}`}
                 done={item.status === "complete"}
                 title={item.tool.replaceAll("_", " ")}
                 detail={item.status}
               />
-            ))}
+            )) : <p className="no-tool-activity">No tool ran in this turn. Conversation never pretends to execute an action.</p>}
           </div>
           <code>
             bounded orchestrator <span>max 6 steps</span>
@@ -1763,6 +1647,7 @@ function ActivityItem({ done, title, detail }) {
 function RecoveryView({ data, history, approve, restore, generate }) {
   const [selected, setSelected] = useState(null);
   const [compare, setCompare] = useState("proposed");
+  const [disruption, setDisruption] = useState({ minutes: 30, reason: "My schedule changed" });
   useEffect(() => {
     setSelected(data?.recommended_option_id || null);
   }, [data]);
@@ -1774,27 +1659,30 @@ function RecoveryView({ data, history, approve, restore, generate }) {
     <View id="recovery">
       <div className="section-head">
         <div>
-          <Eyebrow>DECISION WORKSPACE</Eyebrow>
+          <Eyebrow>SAFE REPLANNING WORKSPACE</Eyebrow>
           <h1>
-            Recovery plan{" "}
+            Rescue my day{" "}
             <em>{data ? "Needs your decision" : "Ready when needed"}</em>
           </h1>
           <p>
-            Compare trade-offs, inspect validation and approve one exact
-            version.
+            Tell Plan B what changed, compare the impact, and approve an exact recovery plan.
           </p>
         </div>
-        <Button onClick={() => generate()}>
+        <Button onClick={() => generate(disruption.minutes, disruption.reason)}>
           <RotateCcw size={14} /> New recovery
         </Button>
       </div>
       {!data ? (
         <div className="empty-recovery">
           <RotateCcw size={28} />
-          <h2>No pending proposal</h2>
-          <p>Report a disruption to calculate its downstream impact.</p>
-          <Button primary onClick={() => generate()}>
-            Generate recovery options
+          <h2>What changed?</h2>
+          <p>Plan B will protect fixed commitments and deadlines before moving flexible work.</p>
+          <div className="recovery-capture">
+            <label>Describe the disruption<input value={disruption.reason} onChange={(event) => setDisruption({ ...disruption, reason: event.target.value })} placeholder="My meeting ran late" /></label>
+            <label>Time lost<input type="number" min="5" max="480" step="5" value={disruption.minutes} onChange={(event) => setDisruption({ ...disruption, minutes: Number(event.target.value) })} /><span>minutes</span></label>
+          </div>
+          <Button primary onClick={() => generate(disruption.minutes, disruption.reason)}>
+            Calculate safe options
           </Button>
         </div>
       ) : (
@@ -1803,11 +1691,11 @@ function RecoveryView({ data, history, approve, restore, generate }) {
             <RotateCcw size={21} />
             <div>
               <b>
-                {data.disruption_minutes}-minute disruption ·{" "}
+                Impact detected · {data.disruption_minutes} minutes lost ·{" "}
                 {data.options.filter((item) => item.feasible).length} feasible
                 options
               </b>
-              <p>Affected: {data.affected_tasks.join(", ")}</p>
+              <p>{data.affected_tasks.length ? `Affected work: ${data.affected_tasks.join(", ")}` : "No task needs to move."}</p>
             </div>
           </div>
           <div className="recovery-layout">
@@ -1935,7 +1823,7 @@ function HistoryList({ history, restore }) {
   );
 }
 
-function PatternsView({ data: initialData }) {
+function PatternsView({ data: initialData, onDiscuss }) {
   const [data, setData] = useState(initialData);
   const [days, setDays] = useState(initialData?.range_days || 7);
   useEffect(() => {
@@ -1946,6 +1834,37 @@ function PatternsView({ data: initialData }) {
   const labels = data?.week_labels || [];
   const timeTrend = data?.time_trend || [];
   const focusTrend = data?.focus_trend || [];
+  const insights = useMemo(() => {
+    if (!data) return [];
+    const items = [];
+    const completion = Number(data.completion_rate || 0);
+    const focus = Number(data.focus_score || 0);
+    const balance = Number(data.balance_score || 0);
+    items.push({
+      tone: completion >= 70 ? "good" : "attention",
+      label: "Delivery",
+      title: completion >= 70 ? "Your commitments are landing consistently" : "Your plan is carrying more than you finish",
+      evidence: `${completion}% of tracked commitments were completed in this period.`,
+      action: completion >= 70 ? "Protect this completion rhythm" : "Reduce my daily workload using this completion rate",
+    });
+    items.push({
+      tone: focus >= 65 ? "good" : "attention",
+      label: "Focus",
+      title: focus >= 65 ? "Protected focus is working" : "Focus time is too fragmented",
+      evidence: `Your focus quality score is ${focus}/100 across the selected range.`,
+      action: focus >= 65 ? "Find my strongest focus window" : "Create longer protected focus blocks",
+    });
+    items.push({
+      tone: balance >= 65 ? "good" : "attention",
+      label: "Balance",
+      title: balance >= 65 ? "Your work mix is sustainable" : "Your schedule needs a healthier mix",
+      evidence: `Your balance score is ${balance}/100 based on focus, fixed work and buffers.`,
+      action: balance >= 65 ? "Keep this balance in next week’s plan" : "Rebalance my next seven days",
+    });
+    const inaccurate = data.categories?.find((item) => Math.abs(item.delta) >= 15);
+    if (inaccurate) items.push({ tone: "attention", label: "Estimates", title: `${inaccurate.name} estimates need calibration`, evidence: `Actual time differs from estimates by ${inaccurate.delta > 0 ? "+" : ""}${inaccurate.delta} minutes on average.`, action: `Adjust future ${inaccurate.name} estimates using this pattern` });
+    return items.slice(0, 4);
+  }, [data]);
   const points = (values, max = 100) =>
     values
       .map(
@@ -1958,10 +1877,9 @@ function PatternsView({ data: initialData }) {
       <div className="section-head">
         <div>
           <Eyebrow>LEARN FROM REALITY</Eyebrow>
-          <h1>Patterns</h1>
+          <h1>Insights</h1>
           <p>
-            Time trends, task and goal progress, activity, focus, balance and
-            work breakdown.
+            Understand what Plan B learned, why it matters, and what you can improve next.
           </p>
         </div>
         <Button
@@ -1973,6 +1891,18 @@ function PatternsView({ data: initialData }) {
         >
           <TrendingUp size={14} /> Last {days} days
         </Button>
+      </div>
+      <div className="insight-explainer">
+        <div><Sparkles size={17} /><span><b>Your planning intelligence</b><small>Every insight below is calculated from your tasks, scheduled time and completed work—not generic advice.</small></span></div>
+        <button onClick={() => onDiscuss("Explain my productivity insights in simple language")}>Ask Plan B to explain</button>
+      </div>
+      <div className="actionable-insights">
+        {insights.map((item) => (
+          <article className={item.tone} key={`${item.label}-${item.title}`}>
+            <small>{item.label}</small><h3>{item.title}</h3><p>{item.evidence}</p>
+            <button onClick={() => onDiscuss(`${item.action}. Explain the evidence and preview any changes before applying them.`)}>{item.action} <ArrowRight size={13} /></button>
+          </article>
+        ))}
       </div>
       <div className="analytics-metrics">
         <Metric
@@ -2524,8 +2454,9 @@ function Connection({ icon, title, detail, state }) {
 }
 
 function TaskModal({ task, projects, close, onSaved }) {
+  const editing = Boolean(task?.id);
   const [form, setForm] = useState(
-    task || {
+    {
       title: "",
       description: "",
       duration_minutes: 60,
@@ -2536,6 +2467,7 @@ function TaskModal({ task, projects, close, onSaved }) {
       splittable: true,
       tags: [],
       project_id: projects[0]?.id || null,
+      ...(task || {}),
     },
   );
   const submit = async (event) => {
@@ -2553,8 +2485,8 @@ function TaskModal({ task, projects, close, onSaved }) {
       tags: form.tags || [],
       project_id: form.project_id || null,
     };
-    await api(task ? `/tasks/${task.id}` : "/tasks", {
-      method: task ? "PATCH" : "POST",
+    await api(editing ? `/tasks/${task.id}` : "/tasks", {
+      method: editing ? "PATCH" : "POST",
       body: JSON.stringify(payload),
     });
     onSaved();
@@ -2565,8 +2497,8 @@ function TaskModal({ task, projects, close, onSaved }) {
         <button type="button" className="close" onClick={close}>
           <X size={18} />
         </button>
-        <Eyebrow>{task ? "EDIT COMMITMENT" : "NEW COMMITMENT"}</Eyebrow>
-        <h2>{task ? "Edit task" : "Add a task"}</h2>
+        <Eyebrow>{editing ? "EDIT COMMITMENT" : task?.fixed_start ? "QUICK CALENDAR TASK" : "NEW COMMITMENT"}</Eyebrow>
+        <h2>{editing ? "Edit task" : task?.fixed_start ? "Schedule this time" : "Add a task"}</h2>
         <p>
           Duration, deadline and scheduled time remain separate constraints.
         </p>
@@ -2681,7 +2613,7 @@ function TaskModal({ task, projects, close, onSaved }) {
           onChange={(value) => setForm({ ...form, splittable: value })}
         />
         <Button primary type="submit" className="wide">
-          {task ? "Save task" : "Add to my plan"} <ArrowRight size={14} />
+          {editing ? "Save task" : "Add to my plan"} <ArrowRight size={14} />
         </Button>
       </form>
     </div>

@@ -54,7 +54,7 @@ The model may interpret intent, but it cannot bypass deterministic scheduling ru
 - Tasks: `GET/POST/PATCH /api/tasks`
 - Projects: `GET/POST/PATCH /api/projects`
 - Predictions: `GET /api/opportunities` and `POST /api/opportunities/{id}/respond`
-- Assistant: `POST /api/assistant`
+- Assistant: `POST /api/assistant` and `GET /api/assistant/history`
 - Recovery: `POST /api/recovery/options`
 - Approval: `POST /api/recovery/{proposal_id}/approve`
 - History: `GET /api/recovery/history` and `POST /api/recovery/{plan_id}/restore`
@@ -77,20 +77,23 @@ No provider key is inserted into the browser bundle or returned in a browser res
 
 Plan B uses a bounded, model-first agent runtime inspired by the useful control patterns in PentAGI while remaining focused on personal planning.
 
-1. The planner converts natural language into a validated `AgentDecision`.
-2. The orchestrator resolves that decision against the current conversation state.
-3. A typed `ToolRegistry` exposes only approved planning operations.
-4. Read actions run immediately; writes create a pending action and require confirmation.
-5. Tool results, assistant turns and pending state are persisted in SQLite.
-6. Every client turn carries an idempotency key so retries cannot duplicate writes.
-7. Invalid model JSON or provider outages activate a deterministic fallback router.
+1. The conversation harness assembles the recent transcript, dialogue frame, current view, pending or suspended actions and grounded schedule facts.
+2. The planner converts natural language into a validated `AgentDecision`; precise high-frequency commands use the same deterministic contract for low latency.
+3. The orchestrator resolves that decision against the current conversation state.
+4. A typed `ToolRegistry` exposes only approved planning operations.
+5. Read actions run immediately; writes create a preview and require confirmation.
+6. Interruptions suspend an unfinished draft instead of discarding it; `continue` restores the frame.
+7. Tool results, assistant turns, metadata and dialogue state are persisted in SQLite and restored by the UI.
+8. Every client turn carries an idempotency key so retries cannot duplicate writes.
+9. Invalid model JSON or provider outages activate a deterministic fallback router.
 
-The runtime deliberately does not send the full task or project database to the model. The model sees the utterance, current page, pending action and tool schemas. Exact records are matched and executed inside the server.
+The runtime deliberately does not send the full task or project database to the model. It sees a bounded recent transcript, dialogue state, compact schedule facts, current page and tool schemas. Exact records are matched and executed inside the server.
 
 The model interprets intent; deterministic application services remain the source of truth for scheduling, validation, recovery and writes.
 
 Key modules:
 
+- `app/conversation_harness.py` — dialogue context, continuity and suspend/resume policy.
 - `app/agents/contracts.py` — structured decisions and tool arguments.
 - `app/agents/planner.py` — NVIDIA structured planning plus fallback/reflection.
 - `app/agents/tools.py` — allowlisted tool registry and schema validation.

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.assistant_service import AssistantService
+from app.briefing import build_briefing
 from app.providers import NVIDIAProvider, ProviderError
 
 DB_PATH = settings.database_path
@@ -1027,6 +1028,17 @@ def save_preferences(payload: PreferencesIn):
     return get_preferences()
 
 
+@app.get("/api/briefing")
+def get_briefing():
+    """Return a live, explainable briefing for the dashboard and voice assistant."""
+    return build_briefing(
+        day=current_day(),
+        tasks=get_tasks(),
+        projects=get_projects(),
+        preferences=get_preferences(),
+    )
+
+
 @app.get("/api/tasks")
 def list_tasks(include_archived: bool = False):
     return get_tasks(include_archived)
@@ -1571,12 +1583,8 @@ def test_provider():
     }
 
 
-@app.post("/api/assistant")
-def assistant(payload: AssistantIn):
-    if not (payload.message or payload.utterance):
-        raise HTTPException(422, "message or utterance is required")
-
-    service = AssistantService(
+def assistant_service() -> AssistantService:
+    return AssistantService(
         db=db,
         provider=call_provider,
         structured_provider=call_provider_structured,
@@ -1593,6 +1601,18 @@ def assistant(payload: AssistantIn):
             ),
         },
     )
+
+
+@app.get("/api/assistant/history")
+def assistant_history(session_id: str = "default", limit: int = 80):
+    return assistant_service().history(session_id, limit)
+
+
+@app.post("/api/assistant")
+def assistant(payload: AssistantIn):
+    if not (payload.message or payload.utterance):
+        raise HTTPException(422, "message or utterance is required")
+    service = assistant_service()
     return service.turn(payload.model_dump())
 
 

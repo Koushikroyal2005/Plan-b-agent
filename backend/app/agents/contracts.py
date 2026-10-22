@@ -7,8 +7,8 @@ from pydantic import BaseModel, Field
 
 Intent = Literal[
     "navigate", "create_task", "create_project", "complete_task",
-    "get_schedule", "get_risks", "recover_schedule", "help", "back",
-    "cancel", "repeat", "converse",
+    "get_schedule", "get_risks", "assess_feasibility", "recover_schedule",
+    "resume", "help", "back", "cancel", "repeat", "converse",
 ]
 
 
@@ -18,7 +18,7 @@ class AgentDecision(BaseModel):
     slots: dict[str, Any] = Field(default_factory=dict)
     response: str | None = None
     reasoning_summary: str = Field(default="", max_length=300)
-    source: Literal["model", "fallback"] = "fallback"
+    source: Literal["model", "fallback", "deterministic"] = "fallback"
 
 
 class ToolEvent(BaseModel):

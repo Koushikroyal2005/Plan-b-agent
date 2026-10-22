@@ -201,6 +201,95 @@ def test_assistant_risk_tool_handles_grounded_api_shape(client: TestClient):
     ]
 
 
+def test_clear_command_interrupts_incomplete_task_dialogue(client: TestClient):
+    session = "interrupt-pending-task"
+    started = client.post(
+        "/api/assistant",
+        json={"message": "Create a task", "session_id": session},
+    )
+    assert started.json()["state"] == "asking"
+
+    risks = client.post(
+        "/api/assistant",
+        json={"message": "What is at risk?", "session_id": session},
+    )
+    assert risks.status_code == 200
+    assert risks.json()["tools"] == [
+        {"tool": "check_deadline_risks", "status": "complete"}
+    ]
+    assert risks.json()["pending_action"] is None
+
+
+def test_feasibility_question_is_not_misclassified_as_task_completion(client: TestClient):
+    response = client.post(
+        "/api/assistant",
+        json={"message": "Can I still finish everything today?", "session_id": "feasibility-regression"},
+    )
+    body = response.json()
+    assert body["agent"]["intent"] == "assess_feasibility"
+    assert [item["tool"] for item in body["tools"]] == ["get_day_schedule", "check_deadline_risks"]
+    assert "full task name" not in body["say"]
+
+
+def test_task_parser_does_not_turn_tomorrow_into_morrow(client: TestClient):
+    response = client.post(
+        "/api/assistant",
+        json={"message": "Create a 45 minute task tomorrow at 10 AM", "session_id": "tomorrow-title-regression"},
+    )
+    body = response.json()
+    assert body["state"] == "asking"
+    assert body["say"] == "What task should I create?"
+    assert body["pending_action"]["slots"]["title"] is None
+    assert body["pending_action"]["slots"]["duration_minutes"] == 45
+    assert body["pending_action"]["slots"]["fixed_start"].endswith("T10:00")
+
+
+def test_interrupted_task_draft_can_be_resumed_with_context(client: TestClient):
+    session = "resume-context-regression"
+    client.post("/api/assistant", json={"message": "Create a task", "session_id": session})
+    client.post("/api/assistant", json={"message": "What is at risk?", "session_id": session})
+    resumed = client.post("/api/assistant", json={"message": "continue", "session_id": session}).json()
+    assert resumed["state"] == "asking"
+    assert resumed["say"] == "What task should I create?"
+    assert resumed["pending_action"]["intent"] == "task.create"
+
+
+def test_natural_timed_task_fills_multiple_slots_in_one_turn(client: TestClient):
+    response = client.post(
+        "/api/assistant",
+        json={"message": "task tonight at 11 pm for 2 hrs creating project", "session_id": "natural-task-regression"},
+    ).json()
+    slots = response["pending_action"]["slots"]
+    assert response["state"] == "confirming"
+    assert slots["title"] == "creating project"
+    assert slots["duration_minutes"] == 120
+    assert slots["fixed_start"].endswith("T23:00")
+
+
+def test_day_after_tomorrow_time_range_is_parsed_without_fake_title(client: TestClient):
+    response = client.post(
+        "/api/assistant",
+        json={
+            "message": "Create a schedule after tomorrow from 2:00 p.m. to 5:00 p.m.",
+            "session_id": "range-regression",
+        },
+    ).json()
+    slots = response["pending_action"]["slots"]
+    assert response["say"] == "What task should I create?"
+    assert slots["title"] is None
+    assert slots["duration_minutes"] == 180
+    assert slots["fixed_start"].endswith("T14:00")
+
+
+def test_assistant_history_restores_message_metadata(client: TestClient):
+    session = "history-regression"
+    client.post("/api/assistant", json={"message": "Plan my day", "session_id": session})
+    history = client.get(f"/api/assistant/history?session_id={session}").json()["messages"]
+    assert [message["role"] for message in history] == ["user", "assistant"]
+    assert history[-1]["meta"]["intent"] == "get_schedule"
+    assert history[-1]["tools"] == [{"tool": "get_day_schedule", "status": "complete"}]
+
+
 def test_model_catalog_and_persistent_selection(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         main.settings.__class__,

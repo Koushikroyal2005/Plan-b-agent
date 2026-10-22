@@ -8,10 +8,12 @@ from typing import Any, Callable
 
 from app.agents import AgentPlanner, ToolRegistry, ToolSpec
 from app.agents.contracts import CreateProjectArgs, CreateTaskArgs, CompleteTaskArgs, RecoveryArgs
+from app.conversation_harness import ConversationHarness
 
 
 ROUTES = {
-    "dashboard": ("dashboard", "home", "my day", "today", "schedule"),
+    "dashboard": ("dashboard", "dashboard", "home"),
+    "day": ("day", "my day", "today", "schedule"),
     "calendar": ("calendar", "calender"),
     "tasks": ("tasks", "task list", "projects", "project list"),
     "assistant": ("assistant", "chat", "plan b"),
@@ -42,10 +44,14 @@ def _duration(text: str) -> int | None:
 
 def _when(text: str) -> str | None:
     lower = text.lower()
+    lower = re.sub(r"\ba\.?\s*m\.?(?=\W|$)", "am", lower)
+    lower = re.sub(r"\bp\.?\s*m\.?(?=\W|$)", "pm", lower)
     target = date.today()
-    if "tomorrow" in lower:
+    if "day after tomorrow" in lower or "after tomorrow" in lower:
+        target += timedelta(days=2)
+    elif "tomorrow" in lower:
         target += timedelta(days=1)
-    elif "today" not in lower and not re.search(r"\d{4}-\d{2}-\d{2}", lower):
+    elif "today" not in lower and "tonight" not in lower and not re.search(r"\d{4}-\d{2}-\d{2}", lower):
         return None
     iso = re.search(r"\d{4}-\d{2}-\d{2}", lower)
     if iso:
@@ -67,18 +73,64 @@ def _when(text: str) -> str | None:
 
 
 def _task_title(text: str) -> str | None:
-    patterns = [
-        r"(?:create|add|make)\s+(?:a\s+)?task\s+(?:called|named|to|for)?\s*(.+)",
-        r"(?:remind me to|i need to)\s+(.+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.I)
-        if match:
-            value = re.split(r"\b(?:for|lasting|due|by|tomorrow|today)\b", match.group(1), maxsplit=1, flags=re.I)[0]
-            value = _clean(value.strip(" .,-"))
-            if value and value.lower() not in {"a task", "task", "it"}:
-                return value[:160]
-    return None
+    trailing = re.search(
+        r"^\s*task\b.*?\bfor\s+\d+(?:\.\d+)?\s*(?:hours?|hrs?|minutes?|mins?)\s+(.+)$",
+        text, re.I,
+    )
+    if trailing:
+        value = re.sub(r"^(?:to|on)\s+", "", trailing.group(1), flags=re.I).strip(" .,-")
+        if value:
+            return _clean(value)[:160]
+    body = re.sub(
+        r"^\s*(?:please\s+)?(?:create|add|make|build)\s+(?:a\s+)?(?:\d+(?:\.\d+)?\s*(?:hours?|hrs?|minutes?|mins?)\s+)?(?:task|schedule)\b",
+        "", text, flags=re.I,
+    )
+    if body == text:
+        body = re.sub(r"^\s*(?:remind me to|i need to)\s+", "", text, flags=re.I)
+    body = re.sub(r"^\s*(?:called|named|to|for)\b\s*", "", body, flags=re.I)
+    body = re.split(
+        r"\b(?:for\s+\d|lasting\s+\d|due\b|by\b|day after tomorrow\b|after tomorrow\b|today\b|tomorrow\b|at\s+\d|from\s+\d)",
+        body, maxsplit=1, flags=re.I,
+    )[0]
+    value = _clean(body.strip(" .,-"))
+    return value[:160] if value and value.lower() not in {"a task", "task", "it"} else None
+
+
+def _range_duration(text: str) -> int | None:
+    text = re.sub(r"\ba\.?\s*m\.?(?=\W|$)", "am", text, flags=re.I)
+    text = re.sub(r"\bp\.?\s*m\.?(?=\W|$)", "pm", text, flags=re.I)
+    match = re.search(
+        r"\bfrom\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s+(?:to|until|till)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b",
+        text, re.I,
+    )
+    if not match:
+        return None
+    start_h, start_m = int(match.group(1)), int(match.group(2) or 0)
+    end_h, end_m = int(match.group(4)), int(match.group(5) or 0)
+    start_meridiem = (match.group(3) or match.group(6)).lower()
+    end_meridiem = match.group(6).lower()
+    if start_meridiem == "pm" and start_h < 12:
+        start_h += 12
+    if start_meridiem == "am" and start_h == 12:
+        start_h = 0
+    if end_meridiem == "pm" and end_h < 12:
+        end_h += 12
+    if end_meridiem == "am" and end_h == 12:
+        end_h = 0
+    minutes = end_h * 60 + end_m - (start_h * 60 + start_m)
+    return minutes if 5 <= minutes <= 720 else None
+
+
+def _task_slots(text: str) -> dict[str, Any]:
+    start = _when(text)
+    fixed = bool(start and re.search(r"\b(?:at|from)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b", text, re.I))
+    return {
+        "title": _task_title(text),
+        "duration_minutes": _range_duration(text) or _duration(text),
+        "deadline": start,
+        "fixed_start": start if fixed else None,
+        "flexibility": "fixed" if fixed else "flexible",
+    }
 
 
 def _project_name(text: str) -> str | None:
@@ -97,6 +149,7 @@ class AssistantService:
         self.db = db
         self.tools = tools
         self.provider = provider
+        self.harness = ConversationHarness()
         self.planner = AgentPlanner(structured_provider or (lambda _system, _prompt: None), list(ROUTES))
         self.registry = ToolRegistry([
             ToolSpec("create_task", "Create a validated task", "write", lambda **v: tools["create_task"](v), CreateTaskArgs),
@@ -124,6 +177,24 @@ class AssistantService:
             {"user": row[0], "assistant": json.loads(row[1]).get("say", "")}
             for row in reversed(rows)
         ]
+
+    def history(self, session_id: str, limit: int = 80) -> dict[str, Any]:
+        safe_limit = min(200, max(1, limit))
+        with self.db() as conn:
+            rows = conn.execute(
+                "SELECT id,utterance,response_json,created_at FROM assistant_turns "
+                "WHERE session_id=? ORDER BY created_at DESC LIMIT ?",
+                (session_id, safe_limit),
+            ).fetchall()
+        messages: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            response = json.loads(row[2])
+            messages.extend([
+                {"id": f"{row[0]}-user", "role": "user", "text": row[1], "status": "Sent", "created_at": row[3]},
+                {"id": f"{row[0]}-assistant", "role": "assistant", "text": response.get("say", ""),
+                 "meta": response.get("agent", {}), "tools": response.get("tools", []), "created_at": row[3]},
+            ])
+        return {"session_id": session_id, "messages": messages}
 
     def _save(self, session_id: str, state: dict[str, Any], utterance: str, response: dict[str, Any], idempotency_key: str | None = None) -> None:
         stamp = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -163,8 +234,12 @@ class AssistantService:
         if not slots.get("duration_minutes"):
             return self._response(f"How long should {slots['title']} take?", state="asking", pending=action, listen_again=True)
         action["status"] = "confirming"
-        due = f", due {slots['deadline'].replace('T', ' at ')}" if slots.get("deadline") else ""
-        say = f"Create {slots['title']} for {slots['duration_minutes']} minutes{due}?"
+        timing = ""
+        if slots.get("fixed_start"):
+            timing = f", scheduled {slots['fixed_start'].replace('T', ' at ')}"
+        elif slots.get("deadline"):
+            timing = f", due {slots['deadline'].replace('T', ' at ')}"
+        say = f"Create {slots['title']} for {slots['duration_minutes']} minutes{timing}?"
         return self._response(say, state="confirming", pending=action, listen_again=True, confirmation=True)
 
     def _continue(self, state: dict[str, Any], text: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -175,7 +250,14 @@ class AssistantService:
             return state, self._response("Cancelled. I did not change anything.", commands=[{"type": "close_modal"}])
         if action["status"] == "confirming":
             if not any(value == lower or value in lower for value in YES):
-                return state, self._response("Please say yes to confirm, or cancel.", state="confirming", pending=action, listen_again=True, confirmation=True)
+                # Corrections should update the preview rather than trapping the user
+                # behind a yes/no gate.
+                if action["intent"] == "task.create" and re.search(r"\b(actually|change|make it|instead|at|tomorrow|today|minutes?|hours?)\b", lower):
+                    updates = _task_slots(text)
+                    action["slots"].update({key: value for key, value in updates.items() if value is not None})
+                    action["status"] = "collecting"
+                    return state, self._ask_task(action)
+                return state, self._response("I’m holding the preview. Say yes to create it, tell me what to change, or say cancel.", state="confirming", pending=action, listen_again=True, confirmation=True)
             if action["intent"] == "task.create":
                 task = self.registry.execute("create_task", action["slots"])
                 state.pop("pending_action", None)
@@ -190,13 +272,17 @@ class AssistantService:
                 return state, self._response(f"Marked {task['title']} complete.", commands=[{"type": "navigate", "target": "tasks"}], tools=[{"tool": "update_task", "status": "complete"}])
         if action["intent"] == "task.create":
             slots = action["slots"]
+            parsed = _task_slots(text)
             if not slots.get("title"):
-                slots["title"] = _task_title("create task " + text) or _clean(text)[:160]
-            elif not slots.get("duration_minutes"):
-                slots["duration_minutes"] = _duration(text)
-                slots["deadline"] = _when(text) or slots.get("deadline")
-                if not slots["duration_minutes"]:
-                    return state, self._response("Tell me a duration such as 30 minutes or 2 hours.", state="asking", pending=action, listen_again=True)
+                candidate = parsed.get("title") or _clean(text)[:160]
+                if re.fullmatch(r"(?:tomorrow|today|at|for|from|\d|am|pm|minutes?|hours?|hrs?|\s|:|-)+", candidate, re.I):
+                    candidate = None
+                slots["title"] = candidate
+            for key in ("duration_minutes", "deadline", "fixed_start", "flexibility"):
+                if parsed.get(key) is not None:
+                    slots[key] = parsed[key]
+            if slots.get("fixed_start"):
+                slots["flexibility"] = "fixed"
             return state, self._ask_task(action)
         if action["intent"] == "project.create":
             action["slots"]["name"] = _clean(text)[:100]
@@ -217,40 +303,81 @@ class AssistantService:
             if cached:
                 return json.loads(cached[0])
         state = self._load(session_id)
+        try:
+            schedule = self.registry.execute("get_day_schedule")
+            schedule_facts = {
+                "scheduled_blocks": len(schedule.get("blocks", [])),
+                "free_buffer_minutes": schedule.get("metrics", {}).get("free_buffer_minutes"),
+                "overrun_minutes": schedule.get("metrics", {}).get("overrun_minutes"),
+            }
+        except Exception:
+            schedule_facts = {}
         decision = self.planner.decide(
             text,
             state=state,
-            context={
-                "current_view": payload.get("current_view"),
-                "available_tools": self.registry.catalog(),
-            },
+            context=self.harness.context(
+                state=state,
+                current_view=payload.get("current_view"),
+                tool_catalog=self.registry.catalog(),
+                recent_turns=self._recent_turns(session_id),
+                schedule_facts=schedule_facts,
+            ),
         )
         intent, slots = decision.intent, decision.slots
         if intent == "repeat":
             with self.db() as conn:
                 row = conn.execute("SELECT last_response_json FROM assistant_sessions WHERE id=?", (session_id,)).fetchone()
             return json.loads(row[0]) if row else self._response("There is nothing to repeat yet.")
-        if intent == "help":
+        pending = state.get("pending_action")
+        same_pending_intent = pending and {
+            "task.create": "create_task", "project.create": "create_project", "task.complete": "complete_task",
+        }.get(pending.get("intent")) == intent
+        explicit_confirmation = pending and pending.get("status") == "confirming" and any(
+            value == text.lower().strip(" .!?") or value in text.lower() for value in YES
+        )
+        if explicit_confirmation or same_pending_intent:
+            state, result = self._continue(state, text)
+        elif intent == "resume":
+            action = self.harness.resume(state)
+            if not action:
+                result = self._response("There is no unfinished request to resume.")
+            elif action["intent"] == "task.create":
+                result = self._ask_task(action)
+            else:
+                result = self._response("I resumed the unfinished request. What would you like to add?", state="asking", pending=action, listen_again=True)
+        elif intent == "help":
             result = self._response("I can navigate Plan B, create tasks and projects, complete tasks, explain your day and risks, and build recovery options. You can also say stop, cancel, repeat, or go back.", commands=[{"type": "show_help"}])
         elif intent == "back":
             result = self._response("Going back.", commands=[{"type": "back"}])
-        elif state.get("pending_action"):
+        elif state.get("pending_action") and intent not in {
+            "navigate", "create_task", "create_project", "complete_task",
+            "recover_schedule", "get_risks", "get_schedule", "assess_feasibility",
+        }:
             state, result = self._continue(state, text)
         elif intent == "cancel":
             result = self._response("There is no pending action to cancel.")
         elif intent == "navigate":
+            self.harness.suspend(state)
             route = slots.get("target")
-            result = self._response(f"Opening {route.replace('_', ' ')}." if route else "I could not find that page.", commands=[{"type": "navigate", "target": route}] if route else [])
+            result = self._response((f"Opening {route.replace('_', ' ')}." if route else "I could not find that page.") + self.harness.draft_note(state), commands=[{"type": "navigate", "target": route}] if route else [])
         elif intent == "create_task":
+            self.harness.suspend(state)
+            parsed_slots = _task_slots(text)
+            parsed_slots.update({key: value for key, value in slots.items() if value is not None})
             action = {"intent": "task.create", "status": "collecting", "slots": {"title": slots.get("title"), "duration_minutes": slots.get("duration_minutes"), "deadline": slots.get("deadline"), "description": slots.get("description", ""), "priority": slots.get("priority", "medium"), "flexibility": slots.get("flexibility", "flexible"), "splittable": slots.get("splittable", True), "tags": slots.get("tags", []), "project_id": slots.get("project_id"), "earliest_start": slots.get("earliest_start"), "fixed_start": slots.get("fixed_start")}}
+            for key, value in parsed_slots.items():
+                if value is not None:
+                    action["slots"][key] = value
             state["pending_action"] = action
             result = self._ask_task(action)
         elif intent == "create_project":
+            self.harness.suspend(state)
             name = slots.get("name")
             action = {"intent": "project.create", "status": "confirming" if name else "collecting", "slots": {"name": name, "description": "", "color": "#657c9a", "target_date": None}}
             state["pending_action"] = action
             result = self._response(f"Create a project called {name}?" if name else "What should I call the project?", state=action["status"] if name else "asking", pending=action, listen_again=True, confirmation=bool(name))
         elif intent == "complete_task":
+            self.harness.suspend(state)
             tasks = self.registry.execute("list_tasks")
             query = str(slots.get("query") or slots.get("title") or text).lower()
             task_id = slots.get("task_id")
@@ -263,22 +390,46 @@ class AssistantService:
                 state["pending_action"] = action
                 result = self._response(f"Mark {task['title']} complete?", state="confirming", pending=action, listen_again=True, confirmation=True)
         elif intent == "recover_schedule":
+            self.harness.suspend(state)
             minutes = int(slots.get("disruption_minutes") or 60)
             recovery = self.registry.execute("generate_recovery_options", {"disruption_minutes": minutes, "reason": slots.get("reason") or text})
             result = self._response(f"I built and validated recovery options for the {minutes}-minute disruption. Nothing has changed until you approve one.", commands=[{"type": "navigate", "target": "recovery"}], tools=[{"tool": "find_affected_tasks", "status": "complete"}, {"tool": "generate_recovery_options", "status": "complete"}, {"tool": "validate_schedule", "status": "complete"}], recovery=recovery)
         elif intent == "get_risks":
+            self.harness.suspend(state)
             risk_result = self.registry.execute("check_deadline_risks")
             risks = risk_result.get("risks", []) if isinstance(risk_result, dict) else risk_result
-            say = risks[0]["reason"] if risks else "Your current plan has no calculated deadline risk."
+            if risks:
+                first = risks[0]
+                task_name = first.get("task")
+                say = f"{task_name + ': ' if task_name else ''}{first['reason']}"
+            else:
+                say = "Your current plan has no calculated deadline risk."
+            say += self.harness.draft_note(state)
             result = self._response(say, tools=[{"tool": "check_deadline_risks", "status": "complete"}])
         elif intent == "get_schedule":
+            self.harness.suspend(state)
             day = self.registry.execute("get_day_schedule")
-            result = self._response(f"You have {len(day['blocks'])} scheduled blocks and {day['metrics']['free_buffer_minutes']} minutes of free buffer.", commands=[{"type": "navigate", "target": "dashboard"}], tools=[{"tool": "get_day_schedule", "status": "complete"}])
+            result = self._response(f"You have {len(day['blocks'])} scheduled blocks and {day['metrics']['free_buffer_minutes']} minutes of free buffer." + self.harness.draft_note(state), commands=[{"type": "navigate", "target": "dashboard"}], tools=[{"tool": "get_day_schedule", "status": "complete"}])
+        elif intent == "assess_feasibility":
+            self.harness.suspend(state)
+            day = self.registry.execute("get_day_schedule")
+            risk_result = self.registry.execute("check_deadline_risks")
+            risks = risk_result.get("risks", []) if isinstance(risk_result, dict) else risk_result
+            free = int(day.get("metrics", {}).get("free_buffer_minutes") or 0)
+            overrun = int(day.get("metrics", {}).get("overrun_minutes") or 0)
+            if overrun:
+                say = f"Not within the current day: the plan overruns capacity by {overrun} minutes"
+            elif risks:
+                say = f"It fits by capacity with {free} minutes free, but {len(risks)} deadline risk{'s' if len(risks) != 1 else ''} remain"
+            else:
+                say = f"Yes. The current plan fits with {free} minutes of free buffer and no calculated deadline risks"
+            result = self._response(say + "." + self.harness.draft_note(state), tools=[{"tool": "get_day_schedule", "status": "complete"}, {"tool": "check_deadline_risks", "status": "complete"}])
         else:
             # The planner is also the conversational agent and must provide the reply
             # in its structured decision. Avoid a second LLM call on fallback/timeouts.
             reply = decision.response if decision.source == "model" else None
             result = self._response(reply or "I can control Plan B tasks, projects, calendar, recovery, patterns, and settings. Try saying: create a task, or open calendar.")
+        self.harness.record(state, intent=intent, utterance=text, slots=slots, current_view=payload.get("current_view"))
         result["agent"] = {"role": "planner", "intent": intent, "confidence": decision.confidence, "source": decision.source, "max_steps": 6}
         self._save(session_id, state, text, result, idempotency_key)
         return result
