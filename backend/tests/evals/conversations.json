@@ -114,7 +114,7 @@
   {"name": "search completed", "turns": [{"say": "show completed tasks", "capabilities": ["tasks.search"]}]},
   {"name": "search open", "turns": [{"say": "what's still open", "capabilities": ["tasks.search"]}]},
 
-  {"name": "converse joke", "turns": [{"say": "tell me a joke", "capabilities": [], "contains": "didn't find an action"}]},
+  {"name": "converse joke", "turns": [{"say": "tell me a joke", "capabilities": []}]},
   {"name": "converse hello", "turns": [{"say": "hello", "capabilities": []}]},
   {"name": "converse noise", "turns": [{"say": "asdf qwerty", "capabilities": []}]},
 

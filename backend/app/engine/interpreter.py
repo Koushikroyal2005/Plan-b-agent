@@ -163,6 +163,16 @@ def interpret(text: str, ctx: InterpretContext) -> Plan:
     if not lower:
         return Plan(reply="I didn't catch anything. Try again?", source="rules")
 
+    if re.fullmatch(r"(?:hi|hello|hey|hey there|good morning|good afternoon|good evening)(?: plan b)?", lower):
+        return Plan(
+            reply="Hi. Tell me what changed, or ask me to plan, move, create, or check something.",
+            confidence=0.95,
+            source="rules",
+        )
+
+    if re.fullmatch(r"(?:thanks|thank you|thankyou|great thanks|okay thanks|got it thanks)", lower):
+        return Plan(reply="You're welcome. I'm ready when your plan changes.", confidence=0.95, source="rules")
+
     if re.search(r"\b(undo|revert|roll ?back|put (it|that|everything) back|take that back|reverse that)\b", lower):
         return _plan("Undo the last change", PlanStep(capability="actions.undo"), confidence=0.95)
 

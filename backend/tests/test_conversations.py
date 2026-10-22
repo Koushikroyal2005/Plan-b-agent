@@ -18,6 +18,7 @@ CORPUS = json.loads((Path(__file__).parent / "evals" / "conversations.json").rea
 @pytest.fixture()
 def demo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(main, "DB_PATH", tmp_path / "planb-eval.sqlite3")
+    monkeypatch.setattr(main, "planner_enabled", lambda: False)
     main.init_db()
     with TestClient(main.app) as test_client:
         assert test_client.post("/api/demo").json()["active"] is True
@@ -154,9 +155,10 @@ def test_slow_provider_is_bounded_and_circuit_opens(demo: TestClient, monkeypatc
     monkeypatch.setattr(main.settings.__class__, "provider_configured", property(lambda self: True))
     monkeypatch.setattr(main, "provider_client", lambda: SlowProvider())
     monkeypatch.setattr(main, "planner_breaker", CircuitBreaker(failure_threshold=2, cooldown_seconds=60))
+    monkeypatch.setattr(main, "planner_enabled", lambda: not main.planner_breaker.is_open)
     for index in range(4):
-        body = say(demo, "what's at risk", f"slow-{index}")
-        assert [t["tool"] for t in body["tools"]] == ["schedule.assess"]
+        body = say(demo, "help me reason about the competing tradeoffs", f"slow-{index}")
+        assert body["tools"] == []
         assert body["planner"] == "rules"
     assert len(calls) == 2
     assert main.provider_status()["planner"]["circuit"] == "open"

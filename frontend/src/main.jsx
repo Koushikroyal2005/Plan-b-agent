@@ -471,7 +471,7 @@ function App() {
       provider={voiceProvider}
       synthesis={voiceSynthesis}
       language={data.preferences?.language || "en-IN"}
-      voiceOutput={data.preferences?.voice_output !== false}
+      voiceOutput={Boolean(data.preferences?.voice_output)}
       onUtterance={sendMessage}
     >
     <div className="app-shell">
@@ -1561,7 +1561,7 @@ function AssistantView({
 }) {
   const [input, setInput] = useState("");
   const [assistantMode, setAssistantMode] = useState("command");
-  const messagesEndRef = useRef(null);
+  const messagesRef = useRef(null);
   const voice = useVoiceSession();
   const lastAssistantId = [...messages].reverse().find((message) => message.role === "assistant")?.id;
   const submit = () => {
@@ -1571,7 +1571,9 @@ function AssistantView({
   };
   const send = (text) => voice.submit(text, "text");
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const pane = messagesRef.current;
+    if (!pane) return;
+    pane.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
   }, [messages, busy, voice.phase]);
   return (
     <View id="assistant">
@@ -1589,7 +1591,12 @@ function AssistantView({
           ["conversation", "Plan together", "Reason through priorities and trade-offs"],
           ["dictation", "Dictate", "Capture a complete thought before sending"],
         ].map(([id, label, description]) => (
-          <button className={assistantMode === id ? "active" : ""} onClick={() => setAssistantMode(id)} key={id}>
+          <button
+            className={assistantMode === id ? "active" : ""}
+            onClick={() => setAssistantMode(id)}
+            aria-pressed={assistantMode === id}
+            key={id}
+          >
             <b>{label}</b><small>{description}</small>
           </button>
         ))}
@@ -1606,7 +1613,7 @@ function AssistantView({
             </div>
             <span className="private">◈ private by design</span>
           </div>
-          <div className="messages">
+          <div className="messages" ref={messagesRef}>
             {messages.map((message, index) => (
               <div className={`message ${message.role}`} key={message.id || index}>
                 {message.role === "assistant" && (
@@ -1647,7 +1654,7 @@ function AssistantView({
                 </div>
               </div>
             )}
-            <div ref={messagesEndRef} className="messages-end" />
+            <div className="messages-end" />
           </div>
           <div className="suggestions">
             {[

@@ -27,6 +27,7 @@ HELP = (
     "change your settings, and undo anything I did. Say cancel or stop at any time."
 )
 FAST_PATH = {"actions.undo", "schedule.apply", "app.navigate", "actions.history"}
+MULTI_ACTION = re.compile(r"\b(?:and then|then also|after that|also)\b|[,;]\s*and\b", re.I)
 
 
 @dataclass
@@ -136,9 +137,18 @@ class AssistantEngine:
     def _understand(self, text: str, payload: dict[str, Any], ctx: ExecContext, run: Run) -> Plan:
         started = perf_counter()
         rules = interpret(text, InterpretContext(today=ctx.today, memory=ctx.memory, current_view=payload.get("current_view")))
-        fast = rules.steps and rules.steps[0].capability in FAST_PATH and rules.confidence >= 0.95
+        # Known product capabilities should never wait on a remote model. The
+        # model is reserved for genuinely ambiguous or multi-action language;
+        # its plan is still validated against the same capability registry.
+        known = bool(rules.steps) and rules.confidence >= 0.80
+        fast = (known or rules.confidence >= 0.90) and not MULTI_ACTION.search(text)
+        conversational = bool(re.search(
+            r"^(?:tell|explain|help me|talk|chat)\b|\b(?:why|how|what do you think|advice|suggest)\b",
+            normalize(text),
+        ))
+        model_candidate = conversational or bool(MULTI_ACTION.search(text)) or len(normalize(text).split()) >= 3
         plan = None
-        if self.model and not fast and self.model_enabled():
+        if self.model and not fast and model_candidate and self.model_enabled():
             plan = self.model.plan(
                 text, today=ctx.today, memory=ctx.memory, tasks=self.services.tasks(),
                 recent_turns=self.store.recent_turns(ctx.session_id), episodes=self.store.episodes(ctx.session_id),
