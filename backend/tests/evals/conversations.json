@@ -1,0 +1,214 @@
+[
+  {"name": "nav calendar", "turns": [{"say": "open calendar", "capabilities": ["app.navigate"], "contains": "Calendar"}]},
+  {"name": "nav settings", "turns": [{"say": "go to settings", "capabilities": ["app.navigate"]}]},
+  {"name": "nav tasks page", "turns": [{"say": "show me the tasks page", "capabilities": ["app.navigate"]}]},
+  {"name": "nav home", "turns": [{"say": "take me home", "capabilities": ["app.navigate"], "contains": "Today"}]},
+  {"name": "nav patterns", "turns": [{"say": "open patterns", "capabilities": ["app.navigate"]}]},
+  {"name": "nav switch calendar", "turns": [{"say": "switch to calendar", "capabilities": ["app.navigate"]}]},
+  {"name": "nav recovery", "turns": [{"say": "navigate to recovery", "capabilities": ["app.navigate"]}]},
+  {"name": "nav assistant", "turns": [{"say": "open the assistant", "capabilities": ["app.navigate"]}]},
+  {"name": "nav today", "turns": [{"say": "go to today", "capabilities": ["app.navigate"]}]},
+  {"name": "nav mcp", "turns": [{"say": "open mcp", "capabilities": ["app.navigate"]}]},
+  {"name": "nav insights", "turns": [{"say": "show insights", "capabilities": ["app.navigate"]}]},
+  {"name": "nav bring up settings", "turns": [{"say": "bring up my settings", "capabilities": ["app.navigate"]}]},
+  {"name": "nav misspelt calender", "turns": [{"say": "open calender", "capabilities": ["app.navigate"]}]},
+
+  {"name": "schedule day look", "turns": [{"say": "what's my day look like", "capabilities": ["calendar.inspect"], "contains": "blocks"}]},
+  {"name": "schedule next", "turns": [{"say": "what's next", "capabilities": ["calendar.inspect"]}]},
+  {"name": "schedule show", "turns": [{"say": "show my schedule", "capabilities": ["calendar.inspect"]}]},
+  {"name": "schedule tomorrow", "turns": [{"say": "what do I have tomorrow", "capabilities": ["calendar.inspect"], "contains": "tomorrow"}]},
+  {"name": "schedule plan my day", "turns": [{"say": "plan my day", "capabilities": ["calendar.inspect"]}]},
+  {"name": "schedule on today", "turns": [{"say": "what's on today", "capabilities": ["calendar.inspect"]}]},
+  {"name": "schedule agenda", "turns": [{"say": "give me my agenda", "capabilities": ["calendar.inspect"]}]},
+  {"name": "schedule how", "turns": [{"say": "how does my schedule look", "capabilities": ["calendar.inspect"]}]},
+
+  {"name": "risk at risk", "turns": [{"say": "what's at risk", "capabilities": ["schedule.assess"]}]},
+  {"name": "risk on track", "turns": [{"say": "am I on track", "capabilities": ["schedule.assess"]}]},
+  {"name": "risk pitch", "turns": [{"say": "can I still finish the pitch", "capabilities": ["schedule.assess"], "contains": "Finish the pitch"}]},
+  {"name": "risk deadlines", "turns": [{"say": "will I make my deadlines", "capabilities": ["schedule.assess"]}]},
+  {"name": "risk miss", "turns": [{"say": "any deadlines I might miss?", "capabilities": ["schedule.assess"]}]},
+  {"name": "risk behind", "turns": [{"say": "am I behind", "capabilities": ["schedule.assess"]}]},
+  {"name": "risk make it", "turns": [{"say": "is the pitch going to make it", "capabilities": ["schedule.assess"]}]},
+  {"name": "risk check", "turns": [{"say": "check my deadlines", "capabilities": ["schedule.assess"]}]},
+  {"name": "risk everything", "turns": [{"say": "Can I still finish everything today?", "capabilities": ["schedule.assess"]}]},
+
+  {"name": "disrupt meeting", "turns": [{"say": "my meeting ran 45 minutes late", "capabilities": ["schedule.recover"], "contains": "Finish the pitch"}]},
+  {"name": "disrupt behind", "turns": [{"say": "I'm running 30 minutes behind", "capabilities": ["schedule.recover"]}]},
+  {"name": "disrupt lost hour", "turns": [{"say": "I lost an hour to a surprise call", "capabilities": ["schedule.recover"]}]},
+  {"name": "disrupt standup", "turns": [{"say": "the standup overran by 20 minutes", "capabilities": ["schedule.recover"]}]},
+  {"name": "disrupt came up", "turns": [{"say": "something came up and I lost 40 minutes", "capabilities": ["schedule.recover"]}]},
+  {"name": "disrupt no minutes", "turns": [{"say": "fix my day", "state": "asking", "contains": "How many minutes"}]},
+  {"name": "disrupt train", "turns": [{"say": "my train was delayed by an hour", "capabilities": ["schedule.recover"]}]},
+  {"name": "disrupt went over", "turns": [{"say": "the client call went over by 25 minutes", "capabilities": ["schedule.recover"]}]},
+  {"name": "disrupt pulled", "turns": [{"say": "I got pulled into a meeting for 50 minutes", "capabilities": ["schedule.recover"]}]},
+  {"name": "disrupt rebuild", "turns": [{"say": "rebuild my day, I lost 2 hours", "capabilities": ["schedule.recover"]}]},
+  {"name": "disrupt demo line", "turns": [{"say": "My meeting ran 45 minutes late and I still need to finish the pitch before 6", "capabilities": ["schedule.recover"], "contains": "pitch deadline"}]},
+  {"name": "disrupt hinglish", "turns": [{"say": "meeting ran 45 min late yaar, pitch is still pending", "capabilities": ["schedule.recover"]}]},
+
+  {"name": "create bank", "turns": [{"say": "add a task to call the bank for 15 minutes", "state": "confirming", "contains": "call the bank"}]},
+  {"name": "create flights", "turns": [{"say": "create a task called book flights for 30 minutes due tomorrow", "state": "confirming", "contains": "book flights"}]},
+  {"name": "create remind", "turns": [{"say": "remind me to send the slides tomorrow at 10 am", "state": "asking", "contains": "How long"}]},
+  {"name": "create bare", "turns": [{"say": "create a task", "state": "asking", "contains": "What task"}]},
+  {"name": "create colon", "turns": [{"say": "new task: email professor 10 minutes", "state": "confirming", "contains": "email professor"}]},
+  {"name": "create need to", "turns": [{"say": "I need to buy groceries for 45 minutes", "state": "confirming", "contains": "buy groceries"}]},
+  {"name": "create priority", "turns": [{"say": "add a high priority task to fix the login bug for 2 hours", "state": "confirming", "contains": "fix the login bug for 120 minutes"}]},
+  {"name": "create gym", "turns": [{"say": "schedule a task tonight at 9 pm for 1 hour called gym", "state": "confirming", "contains": "gym"}]},
+  {"name": "create natural", "turns": [{"say": "task tonight at 11 pm for 2 hrs creating project", "state": "confirming", "contains": "creating project"}]},
+  {"name": "create range", "turns": [{"say": "Create a schedule after tomorrow from 2:00 p.m. to 5:00 p.m.", "state": "asking", "contains": "What task"}]},
+
+  {"name": "project create", "turns": [{"say": "create a project called Hackathon", "state": "confirming", "contains": "Hackathon"}]},
+  {"name": "project bare", "turns": [{"say": "start a new project", "state": "asking", "contains": "call the project"}]},
+  {"name": "project rename", "turns": [{"say": "rename project study sprint to Exams", "state": "confirming", "contains": "Exams"}]},
+  {"name": "project archive", "turns": [{"say": "archive the personal admin project", "state": "confirming", "contains": "archived"}]},
+
+  {"name": "update resize", "turns": [{"say": "make the report review 30 minutes", "state": "confirming", "contains": "60 to 30 minutes"}]},
+  {"name": "update change", "turns": [{"say": "change inbox cleanup to 15 minutes", "state": "confirming", "contains": "30 to 15 minutes"}]},
+  {"name": "update rename", "turns": [{"say": "rename inbox cleanup to Email zero", "state": "confirming", "contains": "Email zero"}]},
+  {"name": "update priority", "turns": [{"say": "make inbox cleanup high priority", "state": "confirming", "contains": "high priority"}]},
+  {"name": "update prioritise", "turns": [{"say": "prioritize report review", "state": "confirming", "contains": "high priority"}]},
+  {"name": "update tomorrow", "turns": [{"say": "move inbox cleanup to tomorrow", "state": "confirming", "contains": "start tomorrow"}]},
+  {"name": "update weekday", "turns": [{"say": "push the report review to friday", "state": "confirming", "contains": "Update Report review"}]},
+  {"name": "update project", "turns": [{"say": "move inbox cleanup into the personal admin project", "state": "confirming", "contains": "another project"}]},
+  {"name": "update deadline", "turns": [{"say": "set the deadline for report review to 5 pm", "state": "confirming", "contains": "5:00 PM"}]},
+  {"name": "update give", "turns": [{"say": "give the pitch 90 minutes", "state": "confirming", "contains": "60 to 90 minutes"}]},
+
+  {"name": "complete mark", "turns": [{"say": "mark inbox cleanup done", "capabilities": ["tasks.complete"]}], "check": {"tasks": {"Inbox cleanup": {"status": "done"}}}},
+  {"name": "complete finished", "turns": [{"say": "I finished the report review", "capabilities": ["tasks.complete"]}], "check": {"tasks": {"Report review": {"status": "done"}}}},
+  {"name": "complete lecture", "turns": [{"say": "I've completed the lecture notes", "capabilities": ["tasks.complete"]}], "check": {"tasks": {"Review lecture notes": {"status": "done"}}}},
+  {"name": "complete done with", "turns": [{"say": "done with inbox cleanup", "capabilities": ["tasks.complete"]}]},
+  {"name": "complete imperative", "turns": [{"say": "complete the pitch", "capabilities": ["tasks.complete"]}]},
+
+  {"name": "archive delete", "turns": [{"say": "delete inbox cleanup", "state": "confirming", "contains": "Archive Inbox cleanup"}]},
+  {"name": "archive archive", "turns": [{"say": "archive the report review", "state": "confirming"}]},
+  {"name": "archive remove", "turns": [{"say": "remove the pitch task", "state": "confirming", "contains": "Finish the pitch"}]},
+  {"name": "archive unknown", "turns": [{"say": "delete the spaceship launch", "state": "failed", "contains": "couldn't find"}]},
+
+  {"name": "slot fit", "turns": [{"say": "when can I fit 45 minutes", "capabilities": ["calendar.find_slot"], "contains": "gap"}]},
+  {"name": "slot find", "turns": [{"say": "find me a 30 minute slot", "capabilities": ["calendar.find_slot"]}]},
+  {"name": "slot tomorrow", "turns": [{"say": "is there time for a 2 hour block tomorrow", "capabilities": ["calendar.find_slot"], "contains": "tomorrow"}]},
+  {"name": "slot no minutes", "turns": [{"say": "find me some free time", "state": "asking", "contains": "How many minutes"}]},
+
+  {"name": "pref buffer", "turns": [{"say": "set my buffer to 20 minutes", "state": "confirming", "contains": "default buffer minutes to 20"}]},
+  {"name": "pref breaks", "turns": [{"say": "set breaks to 15 minutes", "state": "confirming", "contains": "break minutes to 15"}]},
+  {"name": "pref end day", "turns": [{"say": "end my day at 8 pm", "state": "confirming", "contains": "day end to 20:00"}]},
+  {"name": "pref style", "turns": [{"say": "switch to ambitious planning", "state": "confirming", "contains": "ambitious"}]},
+  {"name": "pref voice", "turns": [{"say": "turn on voice replies", "state": "confirming", "contains": "voice output to True"}]},
+  {"name": "pref balanced unchanged", "turns": [{"say": "use balanced planning", "state": "asking", "contains": "Which setting"}]},
+
+  {"name": "history empty", "turns": [{"say": "what did you change", "capabilities": ["actions.history"]}]},
+  {"name": "undo nothing", "turns": [{"say": "undo that", "state": "failed", "contains": "nothing I can undo"}]},
+  {"name": "apply nothing", "turns": [{"say": "apply it", "state": "failed", "contains": "no recovery plan"}]},
+
+  {"name": "help", "turns": [{"say": "help", "capabilities": [], "contains": "Tell me what changed"}]},
+  {"name": "what can you do", "turns": [{"say": "what can you do", "capabilities": []}]},
+  {"name": "cancel idle", "turns": [{"say": "cancel", "contains": "nothing changed"}]},
+  {"name": "repeat idle", "turns": [{"say": "repeat", "contains": "nothing to repeat"}]},
+  {"name": "yes idle", "turns": [{"say": "yes", "contains": "nothing waiting"}]},
+  {"name": "continue idle", "turns": [{"say": "continue", "contains": "nothing paused"}]},
+
+  {"name": "insight week", "turns": [{"say": "how have I been doing this week", "capabilities": ["insights.explain"]}]},
+  {"name": "insight explain", "turns": [{"say": "explain my productivity insights", "capabilities": ["insights.explain"]}]},
+
+  {"name": "search what", "turns": [{"say": "what tasks do I have", "capabilities": ["tasks.search"], "contains": "open tasks"}]},
+  {"name": "search about", "turns": [{"say": "find tasks about the pitch", "capabilities": ["tasks.search"], "contains": "Finish the pitch"}]},
+  {"name": "search completed", "turns": [{"say": "show completed tasks", "capabilities": ["tasks.search"]}]},
+  {"name": "search open", "turns": [{"say": "what's still open", "capabilities": ["tasks.search"]}]},
+
+  {"name": "converse joke", "turns": [{"say": "tell me a joke", "capabilities": [], "contains": "didn't find an action"}]},
+  {"name": "converse hello", "turns": [{"say": "hello", "capabilities": []}]},
+  {"name": "converse noise", "turns": [{"say": "asdf qwerty", "capabilities": []}]},
+
+  {"name": "story full demo", "turns": [
+    {"say": "My meeting ran 45 minutes late and I still need to finish the pitch before 6", "capabilities": ["schedule.recover"], "contains": "Option 2"},
+    {"say": "Don't move lecture notes. Shorten the report review instead", "capabilities": ["schedule.recover"], "contains": "60 to 30"},
+    {"say": "Why this plan?", "capabilities": ["schedule.explain"], "contains": "because you asked"},
+    {"say": "Apply it", "capabilities": ["schedule.apply"], "contains": "5:45 PM"},
+    {"say": "Undo that", "capabilities": ["actions.undo"], "contains": "back to 60 minutes"}
+  ], "check": {"tasks": {"Report review": {"duration_minutes": 60}, "Review lecture notes": {"earliest_start": null}}, "schedule_source": "live"}},
+  {"name": "story second option", "turns": [
+    {"say": "my meeting ran 45 minutes late", "capabilities": ["schedule.recover"]},
+    {"say": "go with the second one", "capabilities": ["schedule.apply"], "contains": "Report review is now 30 minutes"}
+  ], "check": {"tasks": {"Report review": {"duration_minutes": 30}}, "schedule_source": "approved_plan"}},
+  {"name": "story defer then undo", "turns": [
+    {"say": "my meeting ran 45 minutes late", "capabilities": ["schedule.recover"]},
+    {"say": "apply option 1", "capabilities": ["schedule.apply"], "contains": "moved to tomorrow"},
+    {"say": "undo", "capabilities": ["actions.undo"], "contains": "back on today"}
+  ], "check": {"tasks": {"Review lecture notes": {"earliest_start": null, "deadline": "suffix:T16:30"}}}},
+  {"name": "story keep report", "turns": [
+    {"say": "my meeting ran 45 minutes late", "capabilities": ["schedule.recover"]},
+    {"say": "keep the report review as it is", "capabilities": ["schedule.recover"], "contains": "Review lecture notes", "not_contains": "Shorten Report review"}
+  ]},
+  {"name": "create then undo", "turns": [
+    {"say": "add a task to call the bank for 15 minutes", "state": "confirming"},
+    {"say": "yes", "capabilities": ["tasks.create"]},
+    {"say": "undo that", "capabilities": ["actions.undo"]}
+  ], "check": {"tasks": {"call the bank": {"status": "archived"}}}},
+  {"name": "archive then restore", "turns": [
+    {"say": "archive inbox cleanup", "state": "confirming"},
+    {"say": "yes", "capabilities": ["tasks.archive"]},
+    {"say": "restore inbox cleanup", "capabilities": ["tasks.restore"]}
+  ], "check": {"tasks": {"Inbox cleanup": {"status": "open"}}}},
+  {"name": "complete then undo", "turns": [
+    {"say": "mark inbox cleanup done", "capabilities": ["tasks.complete"]},
+    {"say": "undo that", "capabilities": ["actions.undo"]}
+  ], "check": {"tasks": {"Inbox cleanup": {"status": "open"}}}},
+  {"name": "ambiguous lectures", "turns": [
+    {"say": "archive lectures", "state": "asking", "contains": "Which task"},
+    {"say": "the second one", "state": "confirming", "contains": "Review lecture notes"},
+    {"say": "yes", "capabilities": ["tasks.archive"]}
+  ], "check": {"tasks": {"Review lecture notes": {"status": "archived"}, "Morning lectures": {"status": "open"}}}},
+  {"name": "ambiguous by name", "turns": [
+    {"say": "archive lectures", "state": "asking"},
+    {"say": "morning lectures", "state": "confirming", "contains": "Morning lectures"},
+    {"say": "no", "contains": "did not change"}
+  ], "check": {"tasks": {"Morning lectures": {"status": "open"}}}},
+  {"name": "pronoun focus", "turns": [
+    {"say": "can I still finish the pitch", "capabilities": ["schedule.assess"]},
+    {"say": "make it 90 minutes", "state": "confirming", "contains": "Finish the pitch"},
+    {"say": "yes", "capabilities": ["tasks.update"]}
+  ], "check": {"tasks": {"Finish the pitch": {"duration_minutes": 90}}}},
+  {"name": "amend during confirm", "turns": [
+    {"say": "add a task to call mom for 20 minutes", "state": "confirming"},
+    {"say": "make it 30 minutes", "state": "confirming", "contains": "30 minutes"},
+    {"say": "yes", "capabilities": ["tasks.create"]}
+  ], "check": {"tasks": {"call mom": {"duration_minutes": 30}}}},
+  {"name": "question during confirm", "turns": [
+    {"say": "add a task to water plants for 10 minutes", "state": "confirming"},
+    {"say": "what's at risk?", "state": "confirming", "contains": "still holding"},
+    {"say": "yes", "capabilities": ["tasks.create"]}
+  ], "check": {"tasks": {"water plants": {"status": "open"}}}},
+  {"name": "minutes slot", "turns": [
+    {"say": "fix my day", "state": "asking"},
+    {"say": "45", "capabilities": ["schedule.recover"], "contains": "Option 1"}
+  ]},
+  {"name": "pref then undo", "turns": [
+    {"say": "set my buffer to 20 minutes", "state": "confirming"},
+    {"say": "yes", "capabilities": ["preferences.update"]},
+    {"say": "undo that", "capabilities": ["actions.undo"]}
+  ], "check": {"prefs": {"default_buffer_minutes": 10}}},
+  {"name": "double undo", "turns": [
+    {"say": "mark inbox cleanup done", "capabilities": ["tasks.complete"]},
+    {"say": "undo", "capabilities": ["actions.undo"]},
+    {"say": "undo", "state": "failed", "contains": "nothing I can undo"}
+  ]},
+  {"name": "draft pause resume", "turns": [
+    {"say": "create a task", "state": "asking"},
+    {"say": "what's at risk?", "capabilities": ["schedule.assess"], "contains": "say continue"},
+    {"say": "continue", "state": "asking", "contains": "What task"},
+    {"say": "Polish slides", "state": "asking", "contains": "How long"},
+    {"say": "half an hour", "state": "confirming", "contains": "30 minutes"},
+    {"say": "yes", "capabilities": ["tasks.create"]}
+  ], "check": {"tasks": {"Polish slides": {"duration_minutes": 30}}}},
+  {"name": "history after change", "turns": [
+    {"say": "mark inbox cleanup done", "capabilities": ["tasks.complete"]},
+    {"say": "what did you change?", "capabilities": ["actions.history"], "contains": "Inbox cleanup"}
+  ]},
+  {"name": "cancel pending apply", "turns": [
+    {"say": "my meeting ran 45 minutes late", "capabilities": ["schedule.recover"]},
+    {"say": "cancel", "contains": "nothing changed"}
+  ], "check": {"schedule_source": "live"}},
+  {"name": "repeat last", "turns": [
+    {"say": "what's at risk", "capabilities": ["schedule.assess"]},
+    {"say": "say that again", "capabilities": ["schedule.assess"]}
+  ]}
+]

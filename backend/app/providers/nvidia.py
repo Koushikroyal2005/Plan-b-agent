@@ -23,7 +23,7 @@ class NVIDIAProvider:
     api_key: str
     base_url: str
     default_model: str
-    timeout_seconds: int = 25
+    timeout_seconds: float = 5.0
 
     def _request(self, path: str, *, payload: dict | None = None) -> dict:
         data = json.dumps(payload).encode() if payload is not None else None
