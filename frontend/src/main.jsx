@@ -49,6 +49,7 @@ import "./features.css";
 const READ_ONLY_CAPABILITIES = new Set([
   "tasks.search",
   "calendar.inspect",
+  "calendar.task_session",
   "calendar.find_slot",
   "schedule.assess",
   "schedule.recover",
@@ -671,6 +672,7 @@ function TodayView({
 }) {
   const [filter, setFilter] = useState("all");
   const [showAllActivity, setShowAllActivity] = useState(false);
+  const [showAllSignals, setShowAllSignals] = useState(false);
   if (!day) return null;
   const metrics = day.metrics || {};
   const risk = day.risks?.[0];
@@ -692,7 +694,14 @@ function TodayView({
   const filtered = opportunities.filter(
     (item) => filter === "all" || item.kind === filter,
   );
+  const visibleSignals = showAllSignals ? filtered : filtered.slice(0, 2);
   const visibleActivity = showAllActivity ? activityFeed : activityFeed.slice(0, 3);
+  const signalFilters = [
+    ["all", "All"],
+    ["suggestion", "Suggestions"],
+    ["alert", "Alerts"],
+    ["automation", "Automations"],
+  ];
   return (
     <View id="dashboard">
       <div className="hero">
@@ -795,18 +804,22 @@ function TodayView({
             title="Suggestions"
             sub={`${opportunities.length} current signals`}
           />
-          <div className="prediction-tabs">
-            {["all", "suggestion", "alert", "automation"].map((item) => (
+          <div className="prediction-tabs" role="tablist" aria-label="Suggestion categories">
+            {signalFilters.map(([item, label]) => (
               <button
+                type="button"
                 className={filter === item ? "active" : ""}
-                onClick={() => setFilter(item)}
+                onClick={() => { setFilter(item); setShowAllSignals(false); }}
                 key={item}
+                role="tab"
+                aria-selected={filter === item}
               >
-                {item === "all" ? "All" : item}
+                {label}<span>{item === "all" ? opportunities.length : opportunities.filter((signal) => signal.kind === item).length}</span>
               </button>
             ))}
           </div>
-          {filtered.map((item) => (
+          <div className="prediction-list">
+          {visibleSignals.map((item) => (
             <div className={`prediction ${item.kind}`} key={item.id}>
               <header>
                 <b>{item.title}</b>
@@ -825,6 +838,12 @@ function TodayView({
               </footer>
             </div>
           ))}
+          </div>
+          {filtered.length > 2 && (
+            <button type="button" className="list-expander" onClick={() => setShowAllSignals((current) => !current)}>
+              {showAllSignals ? "Show less" : `Show ${filtered.length - 2} more`}
+            </button>
+          )}
           {!filtered.length && <p className="muted">No signals in this category.</p>}
         </div>
       </div>
@@ -859,6 +878,7 @@ function TodayView({
               {showAllActivity ? "Show less" : "View all"}
             </button>
           </div>
+          <div className={`activity-list ${showAllActivity ? "expanded" : ""}`}>
           {visibleActivity.length ? (
             visibleActivity.map((item) => (
               <Feed
@@ -875,6 +895,7 @@ function TodayView({
               detail="Task, project and recovery actions will appear here"
             />
           )}
+          </div>
           <div className="rail-suggestion">
             <Sparkles size={18} />
             <div>
@@ -1826,6 +1847,7 @@ function RecoveryView({ data, history, approve, restore, generate }) {
                 <Check size={12} />{" "}
                 {option?.feasible ? "Validated feasible" : "Not feasible yet"}
               </span>
+              <div className="revised-block-list">
               {shownBlocks?.map((block) => (
                 <div
                   className="revised-block"
@@ -1838,6 +1860,7 @@ function RecoveryView({ data, history, approve, restore, generate }) {
                   <span>{block.detail}</span>
                 </div>
               ))}
+              </div>
               <div className="approval">
                 <b>
                   {option?.feasible

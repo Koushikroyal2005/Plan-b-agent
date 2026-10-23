@@ -54,7 +54,7 @@ class SessionStore:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def recent_turns(self, session_id: str, limit: int = 4) -> list[dict[str, str]]:
+    def recent_turns(self, session_id: str, limit: int = 8) -> list[dict[str, str]]:
         with self.db() as conn:
             rows = conn.execute(
                 "SELECT utterance,response_json FROM assistant_turns WHERE session_id=? "

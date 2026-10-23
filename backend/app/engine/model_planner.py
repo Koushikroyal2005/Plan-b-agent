@@ -19,6 +19,9 @@ Return a JSON object with keys:
   reply (string, only when no capability applies), confidence (0-1).
 Rules:
 - Refer to tasks by their exact title from the supplied list, or "it" for the task in focus.
+- Treat pronouns and phrases such as "that task", "the one you created", and "which session" as follow-ups to working_memory.focus and recent_turns.
+- Use calendar.task_session for questions about when or in which part of the day the focused task is scheduled.
+- If most of a request is understood, ask one specific clarification; never replace partial understanding with a generic command list.
 - If a recovery plan is active and the user corrects it ("don't move X", "shorten Y instead"),
   return one schedule.recover step that keeps the earlier minutes/target and adds the correction.
 - Use ISO local datetimes YYYY-MM-DDTHH:MM resolved against today's date.

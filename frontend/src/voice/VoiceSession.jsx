@@ -98,6 +98,13 @@ export function acknowledgementFor(text) {
   return "One moment…";
 }
 
+export function endpointDelay(text, baseDelay) {
+  const value = (text || "").trim().toLowerCase();
+  const unfinished = /(?:\b(?:and|then|because|but|so|with|at|from|to|for|after|before)|[,;:-])$/.test(value);
+  const veryShort = value.split(/\s+/).filter(Boolean).length < 3;
+  return unfinished || veryShort ? Math.max(baseDelay, 2800) : baseDelay;
+}
+
 const VoiceSessionContext = createContext(null);
 
 export function VoiceSessionProvider({
@@ -106,7 +113,7 @@ export function VoiceSessionProvider({
   language = "en-IN",
   voiceOutput = false,
   autoListen = true,
-  silenceMs = 1100,
+  silenceMs = 1800,
   onUtterance,
   onEvent,
   children,
@@ -206,7 +213,7 @@ export function VoiceSessionProvider({
           silenceRef.current = window.setTimeout(() => {
             dispatch({ type: "endpoint" });
             sessionRef.current?.stop();
-          }, silenceMs);
+          }, endpointDelay(text, silenceMs));
         },
         onError: (error) => {
           failedRef.current = true;

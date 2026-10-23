@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Mic, MicOff, RotateCcw, Sparkles, Square, Volume2, X } from "lucide-react";
+import { RotateCcw, Sparkles, Square, X } from "lucide-react";
 import { useVoiceSession } from "../voice/VoiceSession";
 import { TurnDetails } from "./TurnDetails";
 
@@ -11,21 +11,52 @@ const suggestionsByView = {
   settings: ["Turn on voice replies", "Open my day", "What can you do?"],
 };
 
+const discoveryByView = {
+  dashboard: ["Ask me to plan your day", "Ask what is at risk today", "Tell me what changed"],
+  calendar: ["Ask me to find a free block", "Ask which session a task is in", "Tell me to move a task"],
+  tasks: ["Tell me to create a task", "Ask me to organise a project", "Ask what is still open"],
+  patterns: ["Ask when you focus best", "Ask me to explain your trends", "Ask how this week is going"],
+  settings: ["Tell me your planning preferences", "Ask me to turn on voice replies", "Ask what I can control"],
+};
+
 export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboard", onOpenChat, onUndo }) {
   const voice = useVoiceSession();
   const [expanded, setExpanded] = useState(false);
+  const [hintIndex, setHintIndex] = useState(0);
+  const [hintVisible, setHintVisible] = useState(false);
+  const [hintDismissed, setHintDismissed] = useState(() => window.sessionStorage.getItem("planb-voice-hint-dismissed") === "1");
   const shownTurn = voice.turn && voice.turn.turn_id === turn?.turn_id ? voice.turn : turn;
   const voiceInput = preferences?.voice_input !== false;
   const working = busy || voice.busy;
   useEffect(() => {
     if (turn?.channel === "voice" || voice.error) setExpanded(true);
   }, [turn, voice.error]);
+  useEffect(() => {
+    if (expanded || hintDismissed) {
+      setHintVisible(false);
+      return undefined;
+    }
+    setHintVisible(true);
+    const hide = window.setTimeout(() => setHintVisible(false), 10000);
+    const next = window.setTimeout(() => setHintIndex((value) => value + 1), 15000);
+    return () => {
+      window.clearTimeout(hide);
+      window.clearTimeout(next);
+    };
+  }, [expanded, hintDismissed, hintIndex]);
+
+  const dismissHint = () => {
+    setHintDismissed(true);
+    setHintVisible(false);
+    window.sessionStorage.setItem("planb-voice-hint-dismissed", "1");
+  };
 
   const send = (text) => {
     setExpanded(true);
     voice.submit(text, "voice");
   };
   const pressOrb = () => {
+    dismissHint();
     setExpanded(true);
     if (!voiceInput) return;
     voice.toggle();
@@ -33,6 +64,15 @@ export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboa
 
   return (
     <div className={`voice-assistant ${expanded ? "expanded" : ""}`} aria-live="polite">
+      {!expanded && hintVisible && (
+        <div className="voice-discovery" role="status">
+          <button className="voice-discovery-copy" onClick={pressOrb}>
+            <b>Hey, I’m Plan B.</b>
+            <span>{(discoveryByView[currentView] || discoveryByView.dashboard)[hintIndex % 3]}.</span>
+          </button>
+          <button className="voice-discovery-close" onClick={dismissHint} aria-label="Dismiss assistant tip">×</button>
+        </div>
+      )}
       {expanded && (
         <div className="voice-card">
           <header>
@@ -81,12 +121,19 @@ export function VoiceAssistant({ turn, busy, preferences, currentView = "dashboa
         </div>
       )}
       <button
-        className={`voice-orb ${voice.active ? "listening" : ""} ${voice.phase === "speaking" ? "speaking" : ""}`}
+        className={`voice-orb phase-${voice.phase} ${voice.active ? "listening" : ""} ${voice.phase === "speaking" ? "speaking" : ""}`}
         aria-label={voice.active ? "Stop listening" : voice.phase === "speaking" ? "Interrupt and talk" : "Talk to Plan B"}
         onClick={pressOrb}
         disabled={working}
       >
-        {voice.active ? <MicOff size={22} /> : voice.phase === "speaking" ? <Volume2 size={22} /> : <Mic size={22} />}
+        <span className="orb-halo" aria-hidden="true" />
+        <span className="orb-core" aria-hidden="true">
+          {voice.active || voice.phase === "speaking" ? (
+            <span className="orb-wave">{[1, 2, 3, 4, 5].map((bar) => <i key={bar} />)}</span>
+          ) : (
+            <Sparkles size={21} />
+          )}
+        </span>
       </button>
     </div>
   );

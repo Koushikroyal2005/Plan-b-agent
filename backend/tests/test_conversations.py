@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import main
 from app.providers import CircuitBreaker, ProviderError
+from app.engine.language import repair_transcript
 
 CORPUS = json.loads((Path(__file__).parent / "evals" / "conversations.json").read_text())
 
@@ -200,3 +201,21 @@ def test_response_hides_internal_debug_fields(demo: TestClient):
     text = json.dumps(body)
     for leaked in ("max_steps", "bounded orchestrator", "allowlisted", "converse"):
         assert leaked not in text
+
+
+def test_created_task_can_be_referenced_by_session_in_a_follow_up(demo: TestClient):
+    session = "contextual-session-question"
+    preview = say(demo, "create a two hour task tomorrow from 6 am to 8 am called Amazon demo", session)
+    assert preview["state"] == "confirming"
+    say(demo, "yes", session)
+    answer = say(demo, "that task you just created, which is the in session for me", session)
+    assert [item["tool"] for item in answer["tools"]] == ["calendar.task_session"]
+    assert "Morning Focus" in answer["say"]
+    assert "6:00 AM" in answer["say"] and "8:00 AM" in answer["say"]
+
+
+def test_transcript_repair_is_conservative_and_visible(demo: TestClient):
+    assert repair_transcript("open my calender") == "open my calendar"
+    body = say(demo, "open my calender", "repaired-transcript")
+    assert body["heard"] == "open my calender"
+    assert body["interpreted"] == "open my calendar"

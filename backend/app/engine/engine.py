@@ -14,7 +14,7 @@ from .capabilities import ExecContext, Outcome
 from .catalog import build_registry, run_inverse
 from .errors import Ambiguous, NeedsInfo, NotFound, Refused
 from .interpreter import CANCEL, InterpretContext, interpret, universal
-from .language import duration_minutes, normalize, ordinal
+from .language import duration_minutes, normalize, ordinal, repair_transcript
 from .ledger import ActionLedger
 from .memory import SessionStore
 from .model_planner import ModelPlanner
@@ -33,6 +33,7 @@ MULTI_ACTION = re.compile(r"\b(?:and then|then also|after that|also)\b|[,;]\s*an
 @dataclass
 class Run:
     text: str
+    interpreted: str | None = None
     started: float = field(default_factory=perf_counter)
     steps: list[dict[str, Any]] = field(default_factory=list)
     tools: list[dict[str, str]] = field(default_factory=list)
@@ -66,6 +67,7 @@ class AssistantEngine:
 
     def turn(self, payload: dict[str, Any]) -> dict[str, Any]:
         text = re.sub(r"\s+", " ", (payload.get("utterance") or payload.get("message") or "").strip())
+        interpreted = repair_transcript(text)
         session_id = payload.get("session_id") or "default"
         key = payload.get("idempotency_key")
         cached = self.store.cached(session_id, key)
@@ -74,8 +76,8 @@ class AssistantEngine:
         memory = self.store.load(session_id)
         ctx = ExecContext(services=self.services, memory=memory, session_id=session_id,
                           ledger=self.ledger, today=self.services.today())
-        run = Run(text=text)
-        result = self._dispatch(text, payload, ctx, run)
+        run = Run(text=text, interpreted=interpreted)
+        result = self._dispatch(interpreted, payload, ctx, run)
         self.store.save(session_id, ctx.memory, text, result, key)
         return result
 
@@ -160,7 +162,21 @@ class AssistantEngine:
                         step.confirmed = True
         run.planner = plan.source if plan else "rules"
         run.understand_ms = round((perf_counter() - started) * 1000)
-        return plan or rules
+        selected = plan or rules
+        if not selected.steps and selected.confidence <= 0.4:
+            focus_id = (ctx.memory.get("focus") or {}).get("task")
+            task = next((item for item in self.services.tasks(include_archived=True) if item["id"] == focus_id), None)
+            if task:
+                selected.reply = (
+                    f"I found {task['title']} from our conversation, but I need one detail. "
+                    "Are you asking when it is scheduled, whether it conflicts, or do you want to change it?"
+                )
+            else:
+                selected.reply = (
+                    "I understood that as a planning question, but I need one more detail. "
+                    "Tell me which task or time block you mean."
+                )
+        return selected
 
     # ---------- pending conversations ----------
 
@@ -377,6 +393,7 @@ class AssistantEngine:
             "display": say,
             "state": state,
             "heard": run.text,
+            "interpreted": run.interpreted if run.interpreted != run.text else None,
             "understood": plan.goal if plan and plan.goal else None,
             "acknowledgement": plan.acknowledgement if plan else None,
             "pending_action": {

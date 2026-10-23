@@ -46,6 +46,7 @@ export class BrowserSpeechProvider {
     recognition.interimResults = true;
     recognition.continuous = true;
     let finalText = "";
+    let latestText = "";
     let failed = false;
     recognition.onstart = () => onStart?.();
     recognition.onresult = (event) => {
@@ -56,7 +57,8 @@ export class BrowserSpeechProvider {
         if (event.results[index].isFinal) finalText = `${finalText} ${segment}`.trim();
         else interim = `${interim} ${segment}`.trim();
       }
-      onInterim?.(`${finalText} ${interim}`.trim());
+      latestText = `${finalText} ${interim}`.trim();
+      onInterim?.(latestText);
     };
     recognition.onerror = (event) => {
       if (event.error === "aborted") return;
@@ -64,7 +66,10 @@ export class BrowserSpeechProvider {
       onError?.(classifyVoiceError(event.error));
     };
     recognition.onend = () => {
-      if (!failed) onEnd?.(finalText.trim());
+      // Browsers sometimes end recognition before promoting the last interim
+      // segment to a final result. Preserve the latest stable transcript so a
+      // user's trailing words are not silently dropped.
+      if (!failed) onEnd?.((latestText || finalText).trim());
     };
     recognition.start();
     return { stop: () => recognition.stop(), abort: () => recognition.abort() };

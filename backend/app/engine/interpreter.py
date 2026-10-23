@@ -222,6 +222,19 @@ def interpret(text: str, ctx: InterpretContext) -> Plan:
         name = match.group(1).strip(" .") if match and match.group(1).strip(" .") else None
         return _plan("Create a project", PlanStep(capability="projects.create", arguments={"name": name}))
 
+    if re.search(
+        r"\b(?:which|what)\s+(?:focus\s+)?session\b|\bwhich session is (?:it|that|this) in\b|"
+        r"\b(?:when|what time|where)\s+(?:is|was|did)\s+(?:it|that|this|the task)\b|"
+        r"\b(?:when|where)\s+(?:did you|have you)\s+(?:schedule|put|book)\s+(?:it|that|this)\b",
+        lower,
+    ):
+        day = "tomorrow" if "tomorrow" in lower else ("today" if "today" in lower else None)
+        return _plan(
+            "Explain the task's scheduled session",
+            PlanStep(capability="calendar.task_session", arguments={"task": "it", "day": day}),
+            confidence=0.95,
+        )
+
     if (re.search(r"\b(create|add|make|new|put|schedule)\b.*\btask\b|^task\b|\bremind me to\b|\bi need to\b|\badd\b .+ \bto my (list|tasks|day|calendar)\b", lower)
             or re.search(r"\b(create|add|make|book|block)\b.*\b(schedule|block|slot|session|event|time)\b.*\b(from|at)\s+\d", lower)):
         details = task_details(raw, ctx.today)

@@ -16,6 +16,13 @@ function renderOrb({ turn, provider = new MockVoiceProvider(), onUtterance = vi.
 }
 
 describe("VoiceAssistant", () => {
+  it("introduces the assistant with a contextual discovery prompt", () => {
+    window.sessionStorage.removeItem("planb-voice-hint-dismissed");
+    renderOrb();
+    expect(screen.getByText("Hey, I’m Plan B.")).toBeInTheDocument();
+    expect(screen.getByText(/Ask me to plan your day/)).toBeInTheDocument();
+  });
+
   it("shows the confirmation choices and sends an explicit yes", async () => {
     const turn = {
       turn_id: "t1",

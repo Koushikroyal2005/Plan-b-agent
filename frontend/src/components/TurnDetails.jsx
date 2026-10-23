@@ -31,6 +31,7 @@ export function DecisionPanel({ turn, metrics }) {
   if (!turn) return null;
   const rows = [
     ["Heard", turn.heard],
+    ["Interpreted", turn.interpreted],
     ["Understood as", turn.understood],
     ["Planned by", turn.planner === "model" ? "Language model, checked by Plan B's rules" : "Plan B's built-in rules"],
   ].filter(([, value]) => value);

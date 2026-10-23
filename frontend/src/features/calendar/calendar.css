@@ -223,6 +223,7 @@
 }
 .cal-main {
   overflow: hidden;
+  min-width: 0;
 }
 .cal-toolbar {
   min-height: 72px;
@@ -320,7 +321,7 @@
   border-radius: 50%;
 }
 .timeline-scroll {
-  height: 610px;
+  height: clamp(430px, calc(100vh - 245px), 610px);
   display: grid;
   grid-template-columns: 68px 1fr;
   overflow: auto;

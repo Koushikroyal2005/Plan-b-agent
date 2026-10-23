@@ -1,7 +1,7 @@
 import { act, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { VoiceSessionProvider, initialVoiceState, useVoiceSession, voiceReducer } from "./VoiceSession";
-import { MockSynthesis, MockVoiceProvider, StreamingASRProvider, WisprFlowProvider, classifyVoiceError, selectVoiceProvider } from "./providers";
+import { VoiceSessionProvider, endpointDelay, initialVoiceState, useVoiceSession, voiceReducer } from "./VoiceSession";
+import { BrowserSpeechProvider, MockSynthesis, MockVoiceProvider, StreamingASRProvider, WisprFlowProvider, classifyVoiceError, selectVoiceProvider } from "./providers";
 
 function setup({ provider = new MockVoiceProvider(), synthesis = new MockSynthesis(), turn = { turn_id: "t", say: "Done.", state: "completed" }, ...props } = {}) {
   const session = { current: null };
@@ -27,6 +27,11 @@ function setup({ provider = new MockVoiceProvider(), synthesis = new MockSynthes
 afterEach(() => vi.useRealTimers());
 
 describe("voice session lifecycle", () => {
+  it("waits longer when a speaker pauses mid-thought", () => {
+    expect(endpointDelay("create a task and", 1800)).toBe(2800);
+    expect(endpointDelay("create a task tomorrow", 1800)).toBe(1800);
+  });
+
   it("moves through listening, understanding, speaking and back to idle", async () => {
     const { session, phases, provider, synthesis, onUtterance } = setup();
     await act(async () => session.current.start());
@@ -113,6 +118,24 @@ describe("voice session lifecycle", () => {
 });
 
 describe("voice providers", () => {
+  it("keeps trailing interim words when browser recognition ends early", () => {
+    let recognition;
+    class FakeRecognition {
+      constructor() { recognition = this; }
+      start() { this.onstart?.(); }
+      stop() { this.onend?.(); }
+      abort() {}
+    }
+    const provider = new BrowserSpeechProvider({ SpeechRecognition: FakeRecognition });
+    const ended = vi.fn();
+    provider.start({ onEnd: ended });
+    const result = [{ transcript: "create a task and" }];
+    result.isFinal = false;
+    recognition.onresult({ resultIndex: 0, results: [result] });
+    recognition.stop();
+    expect(ended).toHaveBeenCalledWith("create a task and");
+  });
+
   it("classifies browser errors into user-facing messages", () => {
     expect(classifyVoiceError("not-allowed").message).toMatch(/blocked/);
     expect(classifyVoiceError("weird-code").code).toBe("start-failed");

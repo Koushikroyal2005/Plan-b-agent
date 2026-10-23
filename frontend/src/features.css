@@ -5,26 +5,85 @@
   gap: 18px;
 }
 .today-lower {
-  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-top: 18px;
   align-items: start;
 }
 .prediction-panel {
   padding: 24px;
-  height: max-content;
+  display: flex;
+  flex-direction: column;
+  height: auto;
+  max-height: min(560px, calc(100vh - 230px));
+  overflow: hidden;
 }
 .prediction-tabs {
   display: flex;
-  gap: 18px;
-  border-bottom: 1px solid var(--line);
-  margin: 19px 0 7px;
-  padding-bottom: 11px;
-  color: var(--muted);
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 18px 0 10px;
+  padding: 4px;
+  border: 1px solid #e1e4ea;
+  border-radius: 10px;
+  background: #f5f6f8;
+}
+.prediction-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 29px;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 8px;
+  background: transparent;
+  color: #707783;
   font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
 }
-.prediction-tabs b {
-  color: var(--coral);
+.prediction-tabs button:hover { color: #565ecb; background: #ebeafe; }
+.prediction-tabs button.active { color: #4f56c9; background: #fff; box-shadow: 0 1px 4px rgba(34, 41, 56, .12); }
+.prediction-tabs button span {
+  min-width: 15px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: #e5e7ec;
+  color: #69717d;
+  font-size: 8px;
+  text-align: center;
 }
+.prediction-tabs button.active span { background: #e8e7ff; color: #565dcc; }
+.prediction-list {
+  min-height: 0;
+  flex: 0 1 auto;
+  max-height: 350px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+.prediction-list::-webkit-scrollbar,
+.activity-list::-webkit-scrollbar,
+.revised-block-list::-webkit-scrollbar { width: 6px; }
+.prediction-list::-webkit-scrollbar-thumb,
+.activity-list::-webkit-scrollbar-thumb,
+.revised-block-list::-webkit-scrollbar-thumb { background: #d7dbe3; border-radius: 999px; }
+.list-expander {
+  align-self: flex-start;
+  margin-top: 9px;
+  border: 0;
+  background: transparent;
+  color: #5d63d9;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.activity-list {
+  max-height: 216px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 3px;
+}
+.activity-list.expanded { max-height: min(286px, 34vh); }
 .prediction {
   padding: 15px 0;
   border-bottom: 1px solid var(--line);
@@ -964,6 +1023,9 @@
   padding: 14px 0;
   border-bottom: 1px solid var(--line);
 }
+.feed-row > div {
+  min-width: 0;
+}
 .feed-row > span {
   width: 27px;
   height: 27px;
@@ -981,6 +1043,10 @@
   font-size: 11px;
 }
 .feed-row small {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
   font-size: 9px;
   color: var(--muted);
   margin-top: 4px;
@@ -2114,6 +2180,7 @@ body {
 }
 .rail-card {
   padding: 15px 16px;
+  height: max-content;
 }
 .rail-head {
   display: flex;
@@ -2195,8 +2262,15 @@ body {
 }
 .rail-project header {
   display: flex;
+  gap: 12px;
   justify-content: space-between;
   font-size: 8px;
+}
+.rail-project header b {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .rail-project > i {
   display: block;
@@ -2246,6 +2320,10 @@ body {
   font-size: 10px;
 }
 .rail-suggestion p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
   font-size: 8px;
   line-height: 1.45;
   color: #777c86;

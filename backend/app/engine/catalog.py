@@ -113,6 +113,11 @@ class DayArgs(BaseModel):
     day: str = Field(default="today", description="today, tomorrow or YYYY-MM-DD")
 
 
+class TaskScheduleArgs(BaseModel):
+    task: str = Field(default="it", description="Task title, 'it' for the last task discussed, or id:<uuid>")
+    day: str | None = Field(default=None, description="today, tomorrow or YYYY-MM-DD; inferred from the task when omitted")
+
+
 class SlotArgs(BaseModel):
     minutes: int | None = Field(default=None, ge=5, le=720)
     day: str = "today"
@@ -406,6 +411,37 @@ def inspect_calendar(args: dict[str, Any], ctx: ExecContext) -> Outcome:
             say += f" One concern: {describe_risk(schedule['risks'][0])}"
     return Outcome(say=say, data=schedule, ui=[{"type": "navigate", "target": "dashboard" if day == ctx.today else "calendar"}],
                    evidence=[f"{b['start']}–{b['end']} {b['title']}" for b in work[:6]])
+
+
+def explain_task_schedule(args: dict[str, Any], ctx: ExecContext) -> Outcome:
+    task = ctx.resolver.task(args.get("task") or "it", statuses={"open", "done"})
+    explicit_day = args.get("day")
+    anchor = task.get("fixed_start") or task.get("earliest_start") or task.get("deadline")
+    day = _day_arg(explicit_day, ctx.today) if explicit_day else (
+        datetime.fromisoformat(anchor[:16]).date() if anchor else ctx.today
+    )
+    schedule = ctx.services.day(None if day == ctx.today else day)
+    block = next((item for item in schedule.get("blocks", []) if item.get("task_id") == task["id"]), None)
+    label = "today" if day == ctx.today else (
+        "tomorrow" if day == ctx.today + timedelta(days=1) else day.strftime("%A, %d %B")
+    )
+    if not block:
+        timing = f" Its deadline is {_when(task.get('deadline'), ctx.today)}." if task.get("deadline") else ""
+        return Outcome(
+            say=f"{task['title']} is not assigned to a calendar session {label}.{timing}",
+            data={"task": task, "block": None},
+            focus={"task": task["id"]},
+            ui=[{"type": "navigate", "target": "calendar"}],
+        )
+    start = datetime.fromisoformat(block["start_iso"])
+    session = "Morning Focus" if start.hour < 12 else ("Afternoon Focus" if start.hour < 17 else "Evening Focus")
+    return Outcome(
+        say=f"{task['title']} is in your {session} session {label}, from {block['start']} to {block['end']}.",
+        data={"task": task, "block": block, "session": session},
+        evidence=[f"{block['start']}–{block['end']} {block['title']}"],
+        focus={"task": task["id"]},
+        ui=[{"type": "navigate", "target": "calendar"}, {"type": "highlight", "target": "task", "id": task["id"]}],
+    )
 
 
 def find_slot(args: dict[str, Any], ctx: ExecContext) -> Outcome:
@@ -745,6 +781,9 @@ def build_registry() -> CapabilityRegistry:
                    "write", "required", True, "Updating the project", update_project, prepare_update_project),
         Capability("calendar.inspect", "Read the schedule for a day", DayArgs, ["what's my day look like", "what's on tomorrow"],
                    "read", "none", False, "Reading the calendar", inspect_calendar),
+        Capability("calendar.task_session", "Explain when and in which focus session a task is scheduled", TaskScheduleArgs,
+                   ["which session is that task in", "when is it scheduled"],
+                   "read", "none", False, "Finding that task on your calendar", explain_task_schedule, required_context=["task"]),
         Capability("calendar.find_slot", "Find the next free gap of a given length", SlotArgs, ["when can I fit 45 minutes"],
                    "read", "none", False, "Looking for a free gap", find_slot),
         Capability("schedule.assess", "Check deadline and capacity risk", AssessArgs, ["what's at risk", "can I still finish the pitch"],

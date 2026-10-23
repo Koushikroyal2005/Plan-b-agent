@@ -20,6 +20,22 @@ def normalize(text: str) -> str:
     return value.strip(" .!?,")
 
 
+def repair_transcript(text: str) -> str:
+    """Conservatively repair recurring speech-to-text errors before planning."""
+    value = re.sub(r"\s+", " ", text.strip())
+    substitutions = (
+        (r"\bcalender\b", "calendar"),
+        (r"\b(?:to|till) morrow\b|\bmorrow\b", "tomorrow"),
+        (r"(?<!day )\bafter tomorrow\b", "day after tomorrow"),
+        (r"\bwhich is (?:the )?in session(?: for me)?\b", "which session is it in"),
+        (r"\bwhich is (?:the )?session(?: for me)?\b", "which session is it in"),
+        (r"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.)?\s+to)\s+offer\b", r"\1 4"),
+    )
+    for pattern, replacement in substitutions:
+        value = re.sub(pattern, replacement, value, flags=re.I)
+    return re.sub(r"\s+", " ", value).strip()
+
+
 def _words_to_digits(text: str) -> str:
     value = text.replace("-", " ")
     for word, number in sorted(WORD_NUMBERS.items(), key=lambda item: -len(item[0])):
