@@ -22,6 +22,7 @@ class Settings:
     llm_api_key: str
     asr_provider: str
     tts_provider: str
+    llm_timeout_seconds: float = 5.0
 
     @property
     def provider_configured(self) -> bool:
@@ -44,6 +45,7 @@ def load_settings() -> Settings:
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         asr_provider=os.getenv("ASR_PROVIDER", "browser"),
         tts_provider=os.getenv("TTS_PROVIDER", "none"),
+        llm_timeout_seconds=float(os.getenv("LLM_TIMEOUT_SECONDS", "5")),
     )
 
 

@@ -3,7 +3,6 @@ import {
   CalendarDays,
   Code2,
   Home,
-  LayoutDashboard,
   ListTodo,
   RotateCcw,
   Settings,

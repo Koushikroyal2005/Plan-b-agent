@@ -10,15 +10,12 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Circle,
   Clock3,
   Code2,
   Columns3,
   Command,
   History,
-  Home,
   FolderKanban,
-  LayoutDashboard,
   LayoutList,
   ListFilter,
   ListTodo,
@@ -39,13 +36,28 @@ import {
 } from "lucide-react";
 import { api } from "./core/api";
 import { navigation } from "./core/navigation";
-import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
 import { ProviderModelPicker } from "./features/settings/ProviderModelPicker";
 import { AppHeader } from "./components/AppHeader";
 import { VoiceAssistant } from "./components/VoiceAssistant";
+import { StepTimeline, TurnDetails } from "./components/TurnDetails";
+import { VoiceSessionProvider, useVoiceSession } from "./voice/VoiceSession";
+import { BrowserSynthesis, selectVoiceProvider } from "./voice/providers";
 import { CalendarWorkspace } from "./features/calendar/CalendarWorkspace";
 import "./styles.css";
 import "./features.css";
+
+const READ_ONLY_CAPABILITIES = new Set([
+  "tasks.search",
+  "calendar.inspect",
+  "calendar.task_session",
+  "calendar.find_slot",
+  "schedule.assess",
+  "schedule.recover",
+  "schedule.explain",
+  "insights.explain",
+  "actions.history",
+  "app.navigate",
+]);
 
 function App() {
   const [view, setView] = useState("dashboard");
@@ -76,9 +88,12 @@ function App() {
   const [assistantTurn, setAssistantTurn] = useState(null);
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantQueueSize, setAssistantQueueSize] = useState(0);
+  const [demo, setDemo] = useState({ active: false });
   const assistantBusyRef = useRef(false);
   const assistantQueueRef = useRef([]);
   const previousView = useRef("dashboard");
+  const voiceProvider = useMemo(() => selectVoiceProvider(), []);
+  const voiceSynthesis = useMemo(() => new BrowserSynthesis(), []);
   const sessionId = useMemo(() => {
     const existing = window.localStorage.getItem("planb-assistant-session");
     if (existing) return existing;
@@ -87,9 +102,9 @@ function App() {
     return created;
   }, []);
 
-  const notify = (title, body) => {
-    setToast({ title, body });
-    window.setTimeout(() => setToast(null), 3500);
+  const notify = (title, body, action = null) => {
+    setToast({ title, body, action });
+    window.setTimeout(() => setToast(null), action ? 8000 : 3500);
   };
   const refresh = async () => {
     setLoading(true);
@@ -135,6 +150,7 @@ function App() {
   };
   useEffect(() => {
     refresh();
+    api("/demo").then(setDemo).catch(() => {});
   }, []);
   useEffect(() => {
     let active = true;
@@ -164,9 +180,9 @@ function App() {
   };
   const runUiCommands = (commands = []) => {
     commands.forEach((command) => {
-      if (command.type === "navigate" && navigation.some((item) => item.id === command.target)) {
+      if (command.type === "navigate" && navigation.some((item) => item.id === command.target || (command.target === "day" && item.id === "dashboard"))) {
         previousView.current = view;
-        setView(command.target);
+        setView(command.target === "day" ? "dashboard" : command.target);
       } else if (command.type === "back") {
         setView(previousView.current || "dashboard");
       } else if (command.type === "open_modal" && command.target === "task") {
@@ -212,23 +228,24 @@ function App() {
           client_capabilities: ["navigate", "modal", "highlight", "speech-synthesis"],
         }),
       });
+      const turn = { ...result, channel };
       setMessages((items) => [
         ...items,
-        { id: result.turn_id, role: "assistant", text: result.message, meta: result.agent, tools: result.tools || [] },
+        { id: result.turn_id, role: "assistant", text: result.message, understood: result.understood, turn },
       ]);
-      setActivity(result.tools || []);
+      setActivity(result.steps || []);
       if (result.recovery) setRecovery(result.recovery);
-      setAssistantTurn({ ...result, channel });
+      setAssistantTurn(turn);
       runUiCommands(result.ui_commands);
-      if (result.tools?.some((item) => ["create_task", "create_project", "update_task"].includes(item.tool))) {
+      if (result.tools?.some((item) => !READ_ONLY_CAPABILITIES.has(item.tool))) {
         await refresh();
       }
+      return turn;
     } catch (error) {
-      setMessages((items) => [
-        ...items,
-        { role: "assistant", text: `Planning service error: ${error.message}` },
-      ]);
-      setAssistantTurn({ say: `Planning service error: ${error.message}`, state: "failed", channel });
+      const failed = { turn_id: entry.id, say: `Plan B couldn't finish that: ${error.message}`, state: "failed", channel };
+      setMessages((items) => [...items, { id: `${entry.id}-error`, role: "assistant", text: failed.say }]);
+      setAssistantTurn(failed);
+      return failed;
     } finally {
       assistantBusyRef.current = false;
       setAssistantBusy(false);
@@ -248,12 +265,49 @@ function App() {
       notify("Task update failed", error.message);
     }
   };
+  const forgetUndo = (actionId) => {
+    const strip = (turn) => turn?.undo?.action_id === actionId ? { ...turn, undo: null } : turn;
+    setMessages((items) => items.map((item) => item.turn ? { ...item, turn: strip(item.turn) } : item));
+    setAssistantTurn(strip);
+  };
+  const undoAction = async (actionId) => {
+    try {
+      const result = await api(`/actions/${actionId}/undo`, { method: "POST" });
+      forgetUndo(actionId);
+      const turn = { ...result, channel: "text" };
+      setMessages((items) => [...items, { id: result.turn_id, role: "assistant", text: result.say, understood: result.understood, turn }]);
+      setAssistantTurn(turn);
+      setActivity(result.steps || []);
+      notify("Undone", result.say);
+      await refresh();
+    } catch (error) {
+      notify("Undo failed", error.message);
+    }
+  };
+  const toggleDemo = async () => {
+    try {
+      const next = await api("/demo", { method: demo.active ? "DELETE" : "POST" });
+      setDemo(next);
+      setRecovery(null);
+      notify(
+        next.active ? "Judge demo loaded" : "Demo closed",
+        next.active
+          ? "It's 1:30 PM and the team meeting just started. Try: “My meeting ran 45 minutes late and I still need to finish the pitch before 6.”"
+          : "Your own tasks and settings are back.",
+      );
+      setView("dashboard");
+      await refresh();
+    } catch (error) {
+      notify("Demo unavailable", error.message);
+    }
+  };
   const approve = async (proposalId) => {
     try {
-      await api(`/recovery/${proposalId}/approve`, { method: "POST" });
+      const result = await api(`/recovery/${proposalId}/approve`, { method: "POST" });
       notify(
         "Recovery plan applied",
         "The previous version remains in history.",
+        result.action_id ? { label: "Undo", onClick: () => undoAction(result.action_id) } : null,
       );
       await refresh();
     } catch (error) {
@@ -312,35 +366,24 @@ function App() {
 
   const views = {
     dashboard: (
-      <DashboardView
+      <TodayView
         day={data.day}
         tasks={data.tasks}
         projects={data.projects}
         opportunities={data.opportunities}
-        messages={messages}
-        sendMessage={sendMessage}
         provider={data.provider}
         openChat={() => setView("assistant")}
         openCalendar={() => setView("calendar")}
         openTasks={() => setView("tasks")}
         onAdd={(draft = {}) => setTaskModal(draft)}
-        displayName={data.preferences?.display_name || "there"}
-        activityFeed={data.activityFeed}
         onRecovery={createRecovery}
         onRefresh={refresh}
         onRespond={respondOpportunity}
-      />
-    ),
-    day: (
-      <DayView
-        day={data.day}
-        opportunities={data.opportunities}
-        onRespond={respondOpportunity}
-        onAdd={(draft = {}) => setTaskModal(draft)}
-        onRecovery={createRecovery}
-        onRefresh={refresh}
         navigate={setView}
         displayName={data.preferences?.display_name || "there"}
+        activityFeed={data.activityFeed}
+        demo={demo}
+        onToggleDemo={toggleDemo}
       />
     ),
     calendar: (
@@ -384,10 +427,11 @@ function App() {
       <AssistantView
         messages={messages}
         activity={activity}
+        lastTurn={assistantTurn}
         sendMessage={sendMessage}
+        onUndo={undoAction}
         preferences={data.preferences}
-        currentView={view}
-        notify={notify}
+        currentView={previousView.current}
         busy={assistantBusy}
         queueSize={assistantQueueSize}
       />
@@ -424,6 +468,13 @@ function App() {
   };
 
   return (
+    <VoiceSessionProvider
+      provider={voiceProvider}
+      synthesis={voiceSynthesis}
+      language={data.preferences?.language || "en-IN"}
+      voiceOutput={Boolean(data.preferences?.voice_output)}
+      onUtterance={sendMessage}
+    >
     <div className="app-shell">
       <Sidebar
         view={view}
@@ -489,11 +540,11 @@ function App() {
         busy={assistantBusy}
         preferences={data.preferences}
         currentView={view}
-        onSend={sendMessage}
+        onUndo={undoAction}
         onOpenChat={() => setView("assistant")}
-        onDismiss={() => setAssistantTurn(null)}
       />}
     </div>
+    </VoiceSessionProvider>
   );
 }
 
@@ -589,262 +640,126 @@ const Loading = () => (
     <span>Calculating a resilient plan…</span>
   </div>
 );
-const Toast = ({ title, body }) => (
+const Toast = ({ title, body, action }) => (
   <div className="toast">
     <Check size={16} />
     <div>
       <b>{title}</b>
       <small>{body}</small>
     </div>
+    {action && <button className="toast-action" onClick={action.onClick}>{action.label}</button>}
   </div>
 );
 
-function LegacyDashboardView({
+function TodayView({
   day,
   tasks,
   projects,
   opportunities,
-  openChat,
-  openCalendar,
-}) {
-  const open = tasks.filter((task) => task.status === "open");
-  const done = tasks.filter((task) => task.status === "done");
-  const focusMinutes =
-    day?.blocks
-      ?.filter((block) => block.kind === "focus" || block.kind === "risk")
-      .reduce((sum, block) => sum + block.minutes, 0) || 0;
-  const today = new Date(2026, 9, 19);
-  const monthStart = new Date(2026, 9, 1);
-  const startOffset = monthStart.getDay();
-  return (
-    <View id="dashboard">
-      <div className="dashboard-welcome">
-        <div>
-          <Eyebrow>MONDAY · OCTOBER 19</Eyebrow>
-          <h1>Welcome back, Koushik</h1>
-          <p>Here is what your day and projects look like right now.</p>
-        </div>
-        <Button primary onClick={openChat}>
-          <Sparkles size={14} /> Ask Plan B
-        </Button>
-      </div>
-      <div className="dashboard-metrics">
-        <Metric
-          label="Tasks today"
-          value={open.length}
-          note={`${day?.metrics?.deadlines_today || 0} deadlines`}
-        />
-        <Metric
-          label="In progress"
-          value={day?.blocks?.length || 0}
-          note="scheduled blocks"
-        />
-        <Metric
-          label="Completed"
-          value={done.length}
-          note={`${tasks.length ? Math.round((done.length / tasks.length) * 100) : 0}% completion rate`}
-          good
-        />
-        <Metric
-          label="Focus time"
-          value={(focusMinutes / 60).toFixed(1)}
-          unit="hrs"
-          note="protected deep work"
-        />
-      </div>
-      <div className="dashboard-layout">
-        <div className="dashboard-main">
-          <div className="panel project-progress">
-            <PanelHeading
-              title="Project progress"
-              sub={`${projects.length} active workspaces`}
-            />
-            {projects.map((project) => (
-              <div className="project-progress-row" key={project.id}>
-                <span style={{ background: project.color }}>
-                  <FolderKanban size={14} />
-                </span>
-                <div>
-                  <b>{project.name}</b>
-                  <small>
-                    {project.completed_count}/{project.task_count} tasks ·{" "}
-                    {project.target_date
-                      ? `due ${new Date(project.target_date).toLocaleDateString([], { month: "short", day: "numeric" })}`
-                      : "ongoing"}
-                  </small>
-                  <i>
-                    <em
-                      style={{
-                        width: `${project.progress}%`,
-                        background: project.color,
-                      }}
-                    />
-                  </i>
-                </div>
-                <strong>{project.progress}%</strong>
-              </div>
-            ))}
-          </div>
-          <div className="panel activity-feed">
-            <PanelHeading
-              title="Activity feed"
-              sub="What changed across your plan"
-            />
-            <Feed
-              icon={<Check size={13} />}
-              title={`${done.length} tasks completed`}
-              detail="Completion data now informs duration estimates"
-            />
-            <Feed
-              icon={<RotateCcw size={13} />}
-              title={`${day?.plan_version || 1} plan versions`}
-              detail="Every applied recovery remains restorable"
-            />
-            <Feed
-              icon={<ShieldCheck size={13} />}
-              title="Constraints checked"
-              detail={`${day?.metrics?.confidence || 0}% schedule confidence`}
-            />
-          </div>
-          <div className="panel dashboard-suggestion">
-            <span>
-              <Sparkles size={18} />
-            </span>
-            <div>
-              <Eyebrow>AI SUGGESTION</Eyebrow>
-              <h2>{opportunities[0]?.title || "Your plan is stable"}</h2>
-              <p>
-                {opportunities[0]?.description ||
-                  "There are no urgent changes to review."}
-              </p>
-            </div>
-            <Button onClick={openChat}>
-              Discuss <ArrowRight size={14} />
-            </Button>
-          </div>
-        </div>
-        <aside className="dashboard-side">
-          <div className="panel mini-calendar">
-            <header>
-              <div>
-                <b>October 2026</b>
-                <small>Today and deadlines</small>
-              </div>
-              <button onClick={openCalendar}>
-                <CalendarDays size={15} />
-              </button>
-            </header>
-            <div className="mini-week">
-              {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
-                <b key={`${d}-${i}`}>{d}</b>
-              ))}
-            </div>
-            <div className="mini-days">
-              {Array.from({ length: 35 }, (_, index) => {
-                const number = index - startOffset + 1;
-                const valid = number > 0 && number <= 31;
-                return (
-                  <button
-                    className={
-                      number === today.getDate()
-                        ? "today"
-                        : tasks.some((task) =>
-                              task.deadline?.startsWith(
-                                `2026-10-${String(number).padStart(2, "0")}`,
-                              ),
-                            )
-                          ? "has-task"
-                          : ""
-                    }
-                    key={index}
-                  >
-                    {valid ? number : ""}
-                  </button>
-                );
-              })}
-            </div>
-            <Button className="wide" onClick={openCalendar}>
-              Open full calendar <ArrowRight size={14} />
-            </Button>
-          </div>
-          <div className="panel upcoming">
-            <PanelHeading title="Upcoming" sub="Next scheduled blocks" />
-            {day?.blocks?.slice(0, 4).map((block) => (
-              <div key={block.task_id}>
-                <span>{block.start}</span>
-                <b>{block.title}</b>
-                <small>{block.label}</small>
-              </div>
-            ))}
-          </div>
-        </aside>
-      </div>
-    </View>
-  );
-}
-function DashboardView({
-  day,
-  tasks,
-  projects,
-  opportunities,
-  messages,
-  sendMessage,
   provider,
   openChat,
   openCalendar,
   openTasks,
   onAdd,
-  displayName,
-  activityFeed = [],
   onRecovery,
   onRefresh,
   onRespond,
+  navigate,
+  displayName,
+  activityFeed = [],
+  demo = {},
+  onToggleDemo,
 }) {
-  const [input, setInput] = useState("");
+  const [filter, setFilter] = useState("all");
   const [showAllActivity, setShowAllActivity] = useState(false);
-  const { supported, listening, toggle } = useSpeechRecognition({
-    language: "en-IN",
-    onTranscript: (transcript) => sendMessage(transcript),
-  });
+  const [showAllSignals, setShowAllSignals] = useState(false);
+  if (!day) return null;
+  const metrics = day.metrics || {};
+  const risk = day.risks?.[0];
   const open = tasks.filter((task) => task.status === "open");
-  const done = tasks.filter((task) => task.status === "done");
   const focusMinutes =
-    day?.blocks
+    day.blocks
       ?.filter((block) => block.kind === "focus" || block.kind === "risk")
       .reduce((sum, block) => sum + block.minutes, 0) || 0;
-  const planDate = day?.date
-    ? new Date(`${day.date}T12:00:00`).toLocaleDateString([], {
-        month: "long",
-        day: "numeric",
-      })
-    : "today";
-  const visibleActivity = showAllActivity
-    ? activityFeed
-    : activityFeed.slice(0, 3);
-  const submit = () => {
-    if (!input.trim()) return;
-    sendMessage(input);
-    setInput("");
-  };
-  const quick = [
-    "Summarize today",
-    "Create a recovery plan",
-    "What is at risk?",
-    "Plan my next focus block",
+  const headingDate = day.date
+    ? new Date(`${day.date}T12:00:00`)
+        .toLocaleDateString([], {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+        })
+        .toUpperCase()
+    : "TODAY";
+  const filtered = opportunities.filter(
+    (item) => filter === "all" || item.kind === filter,
+  );
+  const visibleSignals = showAllSignals ? filtered : filtered.slice(0, 2);
+  const visibleActivity = showAllActivity ? activityFeed : activityFeed.slice(0, 3);
+  const signalFilters = [
+    ["all", "All"],
+    ["suggestion", "Suggestions"],
+    ["alert", "Alerts"],
+    ["automation", "Automations"],
   ];
   return (
     <View id="dashboard">
-      <div className="screen4-head">
+      <div className="hero">
         <div>
-          <h1>Good morning, {displayName}</h1>
-          <p>Your day, projects and planning assistant in one place.</p>
+          <Eyebrow>{headingDate}</Eyebrow>
+          <h1>
+            Good morning, {displayName} <span>✦</span>
+          </h1>
+          <p>
+            {day.plan_stale
+              ? "Your tasks or settings changed after the last approved plan, so this timeline was rebuilt."
+              : day.schedule_source === "approved_plan"
+                ? "This timeline is the recovery plan you approved."
+                : "Your tasks, risks and suggestions are calculated for today."}
+          </p>
         </div>
-        <div className="provider-live">
-          <span />
-          {provider?.configured
-            ? `${provider.provider} connected`
-            : "Deterministic mode"}
+        <div className="hero-buttons">
+          <Button onClick={onRefresh}>
+            <RotateCcw size={14} /> Refresh
+          </Button>
+          <Button onClick={() => navigate("recovery")}>
+            <History size={14} /> History
+          </Button>
+          <Button onClick={openCalendar}>
+            <CalendarDays size={14} /> Calendar
+          </Button>
+          <Button onClick={() => onRecovery()}>
+            <Zap size={14} /> Something changed
+          </Button>
+          <Button onClick={onToggleDemo}>
+            <Sparkles size={14} /> {demo.active ? "Exit judge demo" : "Load judge demo"}
+          </Button>
+          <Button primary onClick={onAdd}>
+            <Plus size={15} /> Add task
+          </Button>
         </div>
+      </div>
+      {demo.active && (
+        <div className="demo-banner">
+          <b>Judge demo · the clock is pinned at {demo.clock}</b>
+          <span>Say or type: “My meeting ran 45 minutes late and I still need to finish the pitch before 6.” Then “Don't move lecture notes. Shorten the report review instead.”, “Apply it”, and “Undo that”.</span>
+        </div>
+      )}
+      <div className={`risk-banner ${day.status === "on_track" ? "on-track" : ""}`}>
+        <span>{day.status === "on_track" ? "✓" : "!"}</span>
+        <div>
+          <b>
+            {day.status === "on_track"
+              ? "Your plan is on track"
+              : "Your plan needs attention"}
+          </b>
+          <small>
+            {risk?.reason || "All scheduled work fits inside its constraints."}
+          </small>
+        </div>
+        <button onClick={() => onRecovery()}>
+          See recovery options <ArrowRight size={14} />
+        </button>
       </div>
       <div className="dashboard-metrics screen4-metrics">
         <DashboardMetric
@@ -852,227 +767,151 @@ function DashboardView({
           tone="violet"
           label="Tasks today"
           value={open.length}
-          note={`${day?.metrics?.deadlines_today || 0} due today`}
+          note={`${metrics.deadlines_today || 0} due today`}
         />
         <DashboardMetric
           icon={<Clock3 size={17} />}
           tone="amber"
-          label="In progress"
-          value={day?.blocks?.length || 0}
-          note="scheduled blocks"
-        />
-        <DashboardMetric
-          icon={<Check size={17} />}
-          tone="green"
-          label="Completed"
-          value={done.length}
-          note={`${tasks.length ? Math.round((done.length / tasks.length) * 100) : 0}% completion`}
+          label="Focus time"
+          value={`${Math.floor(focusMinutes / 60)}h ${focusMinutes % 60}m`}
+          note={`${day.blocks?.length || 0} scheduled blocks`}
         />
         <DashboardMetric
           icon={<Target size={17} />}
           tone="blue"
-          label="Focus time"
-          value={`${Math.floor(focusMinutes / 60)}h ${focusMinutes % 60}m`}
-          note={`${day?.metrics?.confidence || 0}% plan confidence`}
+          label="Free buffer"
+          value={`${metrics.free_buffer_minutes || 0}m`}
+          note={`${metrics.confidence || 0}% plan confidence`}
+        />
+        <DashboardMetric
+          icon={<Check size={17} />}
+          tone="green"
+          label="Fixed events"
+          value={day.blocks?.filter((block) => block.kind === "fixed").length || 0}
+          note={provider?.configured ? `${provider.provider} connected` : "Deterministic planner"}
         />
       </div>
-      <div className={`today-control ${day?.status === "on_track" ? "healthy" : "attention"}`}>
-        <span>{day?.status === "on_track" ? <Check size={17} /> : <Zap size={17} />}</span>
-        <div>
-          <b>{day?.status === "on_track" ? "Today is realistic" : "Today needs a decision"}</b>
-          <small>{day?.risks?.[0]?.reason || `Plan v${day?.plan_version || 1} protects fixed work and leaves ${day?.metrics?.free_buffer_minutes || 0} minutes of buffer.`}</small>
+      <div className="day-grid">
+        <div className="panel timeline-panel">
+          <PanelHeading
+            title="Today's timeline"
+            sub={`Plan v${day.plan_version || 1} · fixed commitments stay protected`}
+          />
+          <Timeline blocks={day.blocks} />
         </div>
-        <button onClick={onRefresh}><RotateCcw size={14} /> Refresh</button>
-        <button className="primary" onClick={() => onRecovery()}><Zap size={14} /> Rescue my day</button>
-      </div>
-      <div className="screen4-layout">
-        <div className="panel dashboard-chat-card">
-          <div className="dashboard-chat-top">
-            <div>
-              <span className="assistant-badge">
-                <Sparkles size={16} />
-              </span>
-              <b>Plan B Assistant</b>
-              <small>
-                {provider?.configured
-                  ? "Model connected · approval required"
-                  : "Deterministic planner · approval required"}
-              </small>
-            </div>
-            <button onClick={openChat} title="Open full chat">
-              <ArrowRight size={16} />
-            </button>
-          </div>
-          <div className="dashboard-chat-body">
-            <div className="today-timeline-strip">
-              <header><div><b>Today’s timeline</b><small>Click Calendar for the complete schedule</small></div><button onClick={openCalendar}>Open calendar <ChevronRight size={13} /></button></header>
-              <div>
-                {(day?.blocks || []).slice(0, 4).map((block, index) => (
-                  <button key={`${block.task_id}-${block.start_iso}-${index}`} onClick={openCalendar}>
-                    <time>{block.start}</time><i className={`tone-${index}`} /><span><b>{block.title}</b><small>{block.minutes} min · {block.label}</small></span>
-                  </button>
-                ))}
-                {!day?.blocks?.length && <p>No blocks yet. Add a task or ask Plan B to plan your day.</p>}
-              </div>
-            </div>
-            <div className="assistant-profile">
-              <span>
-                <Sparkles size={24} />
-              </span>
-              <h2>Let’s make today work.</h2>
-              <p>
-                I can inspect your plan, explain risks and prepare changes for
-                your approval.
-              </p>
-            </div>
-            <div className="dashboard-message-list">
-              {messages.slice(-5).map((message, index) => (
-                <div className={`dash-message ${message.role}`} key={index}>
-                  <span>{message.role === "assistant" ? "P" : "KS"}</span>
-                  <p>{message.text}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="dashboard-quick">
-            {quick.map((item) => (
-              <button onClick={() => sendMessage(item)} key={item}>
-                <Sparkles size={12} />
-                {item}
-              </button>
-            ))}
-          </div>
-          <div className="dashboard-composer">
-            <button type="button" onClick={onAdd} title="Add task">
-              <Plus size={18} />
-            </button>
-            <input
-              value={input}
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && submit()}
-              placeholder="Ask Plan B anything about your schedule…"
-            />
-            <button
-              type="button"
-              className="composer-mic"
-              title={
-                supported
-                  ? listening
-                    ? "Stop listening"
-                    : "Speak a message"
-                  : "Voice input is not available in this browser"
-              }
-              onClick={() => {
-                if (!supported) return;
-                toggle();
-              }}
-            >
-              <Mic size={17} />
-            </button>
-            <button className="composer-send" onClick={submit}>
-              <ArrowRight size={17} />
-            </button>
-          </div>
-        </div>
-        <aside className="screen4-rail">
-          <div className="panel rail-card rail-calendar">
-            <div className="rail-head">
-              <div>
-                <b>
-                  <CalendarDays size={15} /> Calendar
-                </b>
-                <small>Today · {planDate}</small>
-              </div>
-              <button onClick={openCalendar}>
-                View calendar <ChevronRight size={13} />
-              </button>
-            </div>
-            {day?.blocks?.slice(0, 3).map((block, index) => (
-              <div className="rail-event" key={`${block.task_id}-${index}`}>
-                <i className={`tone-${index}`} />
-                <div>
-                  <b>{block.title}</b>
-                  <small>{block.start}</small>
-                </div>
-                <span>{block.minutes}m</span>
-              </div>
-            ))}
-            <button className="rail-action" onClick={openCalendar}>
-              Open schedule
-            </button>
-          </div>
-          <div className="panel rail-card">
-            <div className="rail-head">
-              <b>
-                <FolderKanban size={15} /> Project progress
-              </b>
-              <button type="button" onClick={openTasks}>
-                View all
-              </button>
-            </div>
-            {projects.slice(0, 3).map((project) => (
-              <div className="rail-project" key={project.id}>
-                <header>
-                  <b>{project.name}</b>
-                  <span>{project.progress}%</span>
-                </header>
-                <i>
-                  <em
-                    style={{
-                      width: `${project.progress}%`,
-                      background: project.color,
-                    }}
-                  />
-                </i>
-              </div>
-            ))}
-          </div>
-          <div className="panel rail-card">
-            <div className="rail-head">
-              <b>
-                <Activity size={15} /> Activity feed
-              </b>
+        <div className="panel prediction-panel">
+          <PanelHeading
+            title="Suggestions"
+            sub={`${opportunities.length} current signals`}
+          />
+          <div className="prediction-tabs" role="tablist" aria-label="Suggestion categories">
+            {signalFilters.map(([item, label]) => (
               <button
                 type="button"
-                onClick={() => setShowAllActivity((current) => !current)}
+                className={filter === item ? "active" : ""}
+                onClick={() => { setFilter(item); setShowAllSignals(false); }}
+                key={item}
+                role="tab"
+                aria-selected={filter === item}
               >
-                {showAllActivity ? "Show less" : "View all"}
+                {label}<span>{item === "all" ? opportunities.length : opportunities.filter((signal) => signal.kind === item).length}</span>
               </button>
-            </div>
-            {visibleActivity.length ? (
-              visibleActivity.map((item) => (
-                <Feed
-                  key={item.id}
-                  icon={<Activity size={13} />}
-                  title={item.type.replaceAll("_", " ")}
-                  detail={item.detail}
-                />
-              ))
-            ) : (
-              <Feed
-                icon={<Activity size={13} />}
-                title="No activity yet"
-                detail="Task, project and recovery actions will appear here"
-              />
-            )}
+            ))}
           </div>
-          <div className="panel rail-suggestion">
+          <div className="prediction-list">
+          {visibleSignals.map((item) => (
+            <div className={`prediction ${item.kind}`} key={item.id}>
+              <header>
+                <b>{item.title}</b>
+                <em>{item.confidence}%</em>
+              </header>
+              <p>{item.description}</p>
+              <div className="confidence">
+                <i style={{ width: `${item.confidence}%` }} />
+              </div>
+              <small>{item.evidence}</small>
+              <footer>
+                <button onClick={() => onRespond(item, false)}>Decline</button>
+                <button onClick={() => onRespond(item, true)}>
+                  {item.action}
+                </button>
+              </footer>
+            </div>
+          ))}
+          </div>
+          {filtered.length > 2 && (
+            <button type="button" className="list-expander" onClick={() => setShowAllSignals((current) => !current)}>
+              {showAllSignals ? "Show less" : `Show ${filtered.length - 2} more`}
+            </button>
+          )}
+          {!filtered.length && <p className="muted">No signals in this category.</p>}
+        </div>
+      </div>
+      <div className="today-lower">
+        <div className="panel rail-card">
+          <div className="rail-head">
+            <b>
+              <FolderKanban size={15} /> Project progress
+            </b>
+            <button type="button" onClick={openTasks}>
+              View all
+            </button>
+          </div>
+          {projects.slice(0, 3).map((project) => (
+            <div className="rail-project" key={project.id}>
+              <header>
+                <b>{project.name}</b>
+                <span>{project.progress}%</span>
+              </header>
+              <i>
+                <em style={{ width: `${project.progress}%`, background: project.color }} />
+              </i>
+            </div>
+          ))}
+        </div>
+        <div className="panel rail-card">
+          <div className="rail-head">
+            <b>
+              <Activity size={15} /> Activity
+            </b>
+            <button type="button" onClick={() => setShowAllActivity((current) => !current)}>
+              {showAllActivity ? "Show less" : "View all"}
+            </button>
+          </div>
+          <div className={`activity-list ${showAllActivity ? "expanded" : ""}`}>
+          {visibleActivity.length ? (
+            visibleActivity.map((item) => (
+              <Feed
+                key={item.id}
+                icon={<Activity size={13} />}
+                title={item.type.replaceAll("_", " ")}
+                detail={item.detail}
+              />
+            ))
+          ) : (
+            <Feed
+              icon={<Activity size={13} />}
+              title="No activity yet"
+              detail="Task, project and recovery actions will appear here"
+            />
+          )}
+          </div>
+          <div className="rail-suggestion">
             <Sparkles size={18} />
             <div>
-              <b>AI suggestion</b>
-              <p>
-                {opportunities[0]?.description ||
-                  "Your current schedule is stable."}
-              </p>
+              <b>Assistant</b>
+              <p>{opportunities[0]?.description || "Your current schedule is stable."}</p>
             </div>
             {opportunities[0] ? (
               <div className="suggestion-actions">
                 <button onClick={() => onRespond(opportunities[0], false)}>Dismiss</button>
                 <button onClick={() => onRespond(opportunities[0], true)}>{opportunities[0].action}</button>
               </div>
-            ) : <button onClick={openChat}>Discuss my plan</button>}
+            ) : (
+              <button onClick={openChat}>Discuss my plan</button>
+            )}
           </div>
-        </aside>
+        </div>
       </div>
     </View>
   );
@@ -1101,162 +940,6 @@ function Feed({ icon, title, detail }) {
   );
 }
 
-function DayView({
-  day,
-  opportunities,
-  onRespond,
-  onAdd,
-  onRecovery,
-  onRefresh,
-  navigate,
-  displayName,
-}) {
-  const [filter, setFilter] = useState("all");
-  if (!day) return null;
-  const metrics = day.metrics || {};
-  const risk = day.risks?.[0];
-  const filtered = opportunities.filter(
-    (item) => filter === "all" || item.kind === filter,
-  );
-  const headingDate = day.date
-    ? new Date(`${day.date}T12:00:00`)
-        .toLocaleDateString([], {
-          weekday: "long",
-          month: "long",
-          day: "numeric",
-          year: "numeric",
-        })
-        .toUpperCase()
-    : "TODAY";
-  return (
-    <View id="day">
-      <div className="hero">
-        <div>
-          <Eyebrow>{headingDate}</Eyebrow>
-          <h1>
-            Good morning, {displayName} <span>✦</span>
-          </h1>
-          <p>
-            {day.plan_stale
-              ? "Your tasks or settings changed after the last approved plan, so this timeline was rebuilt."
-              : day.schedule_source === "approved_plan"
-                ? "This timeline is the recovery plan you approved."
-                : "Your plan is calculated from real durations, deadlines, fixed events and buffers."}
-          </p>
-        </div>
-        <div className="hero-buttons">
-          <Button onClick={onRefresh}>
-            <RotateCcw size={14} /> Refresh
-          </Button>
-          <Button onClick={() => navigate("recovery")}>
-            <History size={14} /> History
-          </Button>
-          <Button onClick={() => onRecovery()}>
-            <Zap size={14} /> Something changed
-          </Button>
-          <Button primary onClick={onAdd}>
-            <Plus size={15} /> Add task
-          </Button>
-        </div>
-      </div>
-      <div
-        className={`risk-banner ${day.status === "on_track" ? "on-track" : ""}`}
-      >
-        <span>{day.status === "on_track" ? "✓" : "!"}</span>
-        <div>
-          <b>
-            {day.status === "on_track"
-              ? "Your plan is on track"
-              : "Your plan needs attention"}
-          </b>
-          <small>
-            {risk?.reason || "All scheduled work fits inside its constraints."}
-          </small>
-        </div>
-        <button onClick={() => onRecovery()}>
-          See recovery options <ArrowRight size={14} />
-        </button>
-      </div>
-      <div className="metrics">
-        <Metric
-          label="Active predictions"
-          value={opportunities.length}
-          note="live schedule signals"
-        />
-        <Metric
-          label="Suggested actions"
-          value={
-            opportunities.filter((item) => item.kind !== "prediction").length
-          }
-          note="awaiting your choice"
-        />
-        <Metric
-          label="Goals on track"
-          value={Math.max(0, 3 - metrics.risky_tasks)}
-          unit="/3"
-          note="based on current slack"
-          good
-        />
-        <Metric
-          label="Upcoming events"
-          value={
-            day.blocks?.filter((block) => block.kind === "fixed").length || 0
-          }
-          note={`${metrics.free_buffer_minutes || 0} min free buffer`}
-          warning={day.status !== "on_track"}
-        />
-      </div>
-      <div className="day-grid">
-        <div className="panel timeline-panel">
-          <PanelHeading
-            title="Today's timeline"
-            sub={`Plan v${day.plan_version || 1} · fixed commitments stay protected`}
-          />
-          <Timeline blocks={day.blocks} />
-        </div>
-        <div className="panel prediction-panel">
-          <PanelHeading
-            title="Proactive predictions"
-            sub={`${opportunities.length} current signals`}
-          />
-          <div className="prediction-tabs">
-            {["all", "suggestion", "alert", "automation"].map((item) => (
-              <button
-                className={filter === item ? "active" : ""}
-                onClick={() => setFilter(item)}
-                key={item}
-              >
-                {item === "all" ? "All" : item}
-              </button>
-            ))}
-          </div>
-          {filtered.map((item) => (
-            <div className={`prediction ${item.kind}`} key={item.id}>
-              <header>
-                <b>{item.title}</b>
-                <em>{item.confidence}%</em>
-              </header>
-              <p>{item.description}</p>
-              <div className="confidence">
-                <i style={{ width: `${item.confidence}%` }} />
-              </div>
-              <small>{item.evidence}</small>
-              <footer>
-                <button onClick={() => onRespond(item, false)}>Decline</button>
-                <button onClick={() => onRespond(item, true)}>
-                  {item.action}
-                </button>
-              </footer>
-            </div>
-          ))}
-          {!filtered.length && (
-            <p className="muted">No signals in this category.</p>
-          )}
-        </div>
-      </div>
-    </View>
-  );
-}
 function Metric({ label, value, unit, note, good, warning }) {
   return (
     <div className="metric">
@@ -1890,36 +1573,29 @@ function TasksView({
 function AssistantView({
   messages,
   activity,
+  lastTurn,
   sendMessage,
+  onUndo,
   preferences,
-  currentView,
-  notify,
   busy,
   queueSize,
 }) {
   const [input, setInput] = useState("");
   const [assistantMode, setAssistantMode] = useState("command");
-  const messagesEndRef = useRef(null);
-  const { listening, supported, toggle } = useSpeechRecognition({
-    language: preferences?.language || "en-IN",
-    onTranscript: setInput,
-  });
+  const messagesRef = useRef(null);
+  const voice = useVoiceSession();
+  const lastAssistantId = [...messages].reverse().find((message) => message.role === "assistant")?.id;
   const submit = () => {
     if (!input.trim()) return;
-    sendMessage(input);
+    voice.submit(input, "text");
     setInput("");
   };
-  const voice = () =>
-    supported
-      ? toggle()
-      : notify(
-          "Voice input unavailable",
-          "Use a supported browser or connect Wispr Flow later.",
-        );
-  const tools = activity;
+  const send = (text) => voice.submit(text, "text");
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, busy]);
+    const pane = messagesRef.current;
+    if (!pane) return;
+    pane.scrollTo({ top: pane.scrollHeight, behavior: "smooth" });
+  }, [messages, busy, voice.phase]);
   return (
     <View id="assistant">
       <div className="section-head">
@@ -1928,7 +1604,7 @@ function AssistantView({
           <h1>Plan B command centre</h1>
           <p>Talk naturally, preview real actions, and control every planning workflow.</p>
         </div>
-        <span className="provider">● Server controlled · approval gated</span>
+        <span className="provider">● Every change can be undone</span>
       </div>
       <div className="assistant-modebar">
         {[
@@ -1936,7 +1612,12 @@ function AssistantView({
           ["conversation", "Plan together", "Reason through priorities and trade-offs"],
           ["dictation", "Dictate", "Capture a complete thought before sending"],
         ].map(([id, label, description]) => (
-          <button className={assistantMode === id ? "active" : ""} onClick={() => setAssistantMode(id)} key={id}>
+          <button
+            className={assistantMode === id ? "active" : ""}
+            onClick={() => setAssistantMode(id)}
+            aria-pressed={assistantMode === id}
+            key={id}
+          >
             <b>{label}</b><small>{description}</small>
           </button>
         ))}
@@ -1953,7 +1634,7 @@ function AssistantView({
             </div>
             <span className="private">◈ private by design</span>
           </div>
-          <div className="messages">
+          <div className="messages" ref={messagesRef}>
             {messages.map((message, index) => (
               <div className={`message ${message.role}`} key={message.id || index}>
                 {message.role === "assistant" && (
@@ -1961,23 +1642,40 @@ function AssistantView({
                 )}
                 <div>
                   <p>{message.text}</p>
+                  {message.turn && (
+                    <TurnDetails
+                      turn={message.id === lastAssistantId ? message.turn : { ...message.turn, choices: [] }}
+                      metrics={message.id === lastAssistantId ? voice.metrics : null}
+                      onSend={send}
+                      onUndo={onUndo}
+                      disabled={busy}
+                      showSteps={message.turn.steps?.length > 1}
+                    />
+                  )}
                   <small>
                     {message.role === "assistant"
-                      ? message.meta?.intent
-                        ? `${message.meta.intent.replaceAll("_", " ")} · ${message.meta.source || "planner"}`
-                        : "Plan B"
+                      ? ["Plan B", message.understood || message.meta?.understood].filter(Boolean).join(" · ")
                       : message.status || "You · now"}
                   </small>
                 </div>
               </div>
             ))}
-            {busy && (
+            {(busy || voice.busy) && (
               <div className="message assistant pending-message">
                 <span className="message-icon">✦</span>
-                <div><span className="thinking-dots"><i /><i /><i /></span><p>Plan B is checking your request…</p><small>{queueSize ? `${queueSize} more message${queueSize === 1 ? "" : "s"} queued` : "Working now"}</small></div>
+                <div><span className="thinking-dots"><i /><i /><i /></span><p>{voice.ack || "One moment…"}</p><small>{queueSize ? `${queueSize} more message${queueSize === 1 ? "" : "s"} queued` : "Working now"}</small></div>
               </div>
             )}
-            <div ref={messagesEndRef} className="messages-end" />
+            {voice.error && (
+              <div className="message assistant voice-error" role="alert">
+                <span className="message-icon">!</span>
+                <div>
+                  <p>{voice.error.message}</p>
+                  {voice.error.recoverable && <button onClick={voice.retry}><RotateCcw size={13} /> Retry</button>}
+                </div>
+              </div>
+            )}
+            <div className="messages-end" />
           </div>
           <div className="suggestions">
             {[
@@ -1985,21 +1683,28 @@ function AssistantView({
               assistantMode === "dictation" ? "Capture a detailed task description" : "Can I still finish everything today?",
               assistantMode === "command" ? "Open my calendar and show conflicts" : "Give me the shortest realistic plan",
             ].map((text) => (
-              <button onClick={() => sendMessage(text)} key={text}>
+              <button onClick={() => send(text)} key={text}>
                 {text}
               </button>
             ))}
           </div>
           <div className="composer">
-            <button className={listening ? "listening" : ""} onClick={voice} disabled={busy}>
+            <button
+              className={voice.active ? "listening" : ""}
+              onClick={voice.toggle}
+              disabled={busy || preferences?.voice_input === false}
+              aria-label={voice.active ? "Stop listening" : "Speak to Plan B"}
+              title={voice.supported ? voice.label : "Voice input isn't available in this browser"}
+            >
               <Mic size={17} />
             </button>
             <input
-              value={input}
+              value={voice.active ? voice.interim : input}
+              readOnly={voice.active}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => event.key === "Enter" && submit()}
               placeholder={
-                listening ? "Listening…" : "Tell Plan B what changed…"
+                voice.active ? "Listening… pause when you're done" : "Tell Plan B what changed…"
               }
             />
             <button className="send" onClick={submit} disabled={!input.trim()}>
@@ -2007,55 +1712,32 @@ function AssistantView({
             </button>
           </div>
           <small className="note">
-            Nothing changes until you explicitly confirm it.
+            Changes are previewed first, and anything applied can be undone.
           </small>
         </div>
         <div className="panel activity-panel">
           <PanelHeading
-            title="Execution context"
-            sub={`Currently working from ${currentView || "today"}`}
+            title="What Plan B did"
+            sub={lastTurn?.understood || "Your latest request, step by step"}
           />
+          {activity.length ? (
+            <StepTimeline steps={activity} />
+          ) : (
+            <p className="no-tool-activity">Nothing has run yet. Ask a question or tell Plan B what changed.</p>
+          )}
+          {lastTurn?.undo && (
+            <button className="ghost undo-latest" onClick={() => onUndo(lastTurn.undo.action_id)} disabled={busy}>
+              <RotateCcw size={13} /> Undo “{lastTurn.undo.label}”
+            </button>
+          )}
           <div className="assistant-context-card">
             <small>WHAT PLAN B CAN CONTROL</small>
             <div><span>Tasks</span><span>Calendar</span><span>Projects</span><span>Navigation</span><span>Recovery</span><span>Insights</span></div>
-            <p>Read actions run immediately. Changes are previewed and confirmation-gated.</p>
+            <p>Questions are answered right away. Changes wait for your OK, and you can say “undo that” afterwards.</p>
           </div>
-          <h3 className="activity-label">Latest tool activity</h3>
-          <div className="activities">
-            {tools.length ? tools.map((item) => (
-              <ActivityItem
-                key={`${item.tool}-${item.status}`}
-                done={item.status === "complete"}
-                title={item.tool.replaceAll("_", " ")}
-                detail={item.status}
-              />
-            )) : <p className="no-tool-activity">No tool ran in this turn. Conversation never pretends to execute an action.</p>}
-          </div>
-          <code>
-            bounded orchestrator <span>max 6 steps</span>
-          </code>
-          <code>
-            approval gate <span>required</span>
-          </code>
-          <code>
-            write tools <span>allowlisted</span>
-          </code>
         </div>
       </div>
     </View>
-  );
-}
-function ActivityItem({ done, title, detail }) {
-  return (
-    <div className="activity-item">
-      <span className={done ? "done" : ""}>
-        {done ? <Check size={11} /> : <Circle size={10} />}
-      </span>
-      <div>
-        <b>{title}</b>
-        <small>{detail}</small>
-      </div>
-    </div>
   );
 }
 
@@ -2165,6 +1847,7 @@ function RecoveryView({ data, history, approve, restore, generate }) {
                 <Check size={12} />{" "}
                 {option?.feasible ? "Validated feasible" : "Not feasible yet"}
               </span>
+              <div className="revised-block-list">
               {shownBlocks?.map((block) => (
                 <div
                   className="revised-block"
@@ -2177,6 +1860,7 @@ function RecoveryView({ data, history, approve, restore, generate }) {
                   <span>{block.detail}</span>
                 </div>
               ))}
+              </div>
               <div className="approval">
                 <b>
                   {option?.feasible
