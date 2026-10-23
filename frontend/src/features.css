@@ -1,20 +1,20 @@
 .day-grid,
 .today-lower {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(320px, 0.75fr);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 0.72fr);
+  gap: 14px;
+  align-items: stretch;
 }
 .today-lower {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 18px;
-  align-items: start;
+  margin-top: 14px;
 }
 .prediction-panel {
-  padding: 24px;
+  padding: 18px;
   display: flex;
   flex-direction: column;
   height: auto;
-  max-height: min(560px, calc(100vh - 230px));
+  max-height: none;
   overflow: hidden;
 }
 .prediction-tabs {
@@ -78,12 +78,12 @@
   cursor: pointer;
 }
 .activity-list {
-  max-height: 216px;
+  max-height: 180px;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 3px;
 }
-.activity-list.expanded { max-height: min(286px, 34vh); }
+.activity-list.expanded { max-height: min(240px, 30vh); }
 .prediction {
   padding: 15px 0;
   border-bottom: 1px solid var(--line);
@@ -485,9 +485,10 @@
 }
 .analytics-metrics {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 18px;
+  margin: 0 0 14px;
+  align-items: stretch;
 }
 .analytics-grid {
   display: grid;
@@ -1501,23 +1502,27 @@
   grid-template-columns: 1.25fr 0.75fr;
   gap: 18px;
 }
-.insight-explainer { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:12px; padding:14px 16px; border:1px solid #dfE3eb; border-radius:14px; background:#fff; }.insight-explainer > div { display:flex; align-items:center; gap:10px; }.insight-explainer svg { color:#6d5ed8; }.insight-explainer b,.insight-explainer small { display:block; }.insight-explainer b { font-size:11px; }.insight-explainer small { margin-top:3px; color:var(--muted); font-size:9px; }.insight-explainer button { border:0; border-radius:9px; padding:9px 11px; background:#ece9ff; color:#5f50c4; font-size:9px; font-weight:700; cursor:pointer; }
-.actionable-insights { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:16px; }.actionable-insights article { min-width:0; padding:15px; border:1px solid #e1e4e9; border-radius:14px; background:#fff; }.actionable-insights article.good { box-shadow:inset 0 3px #55ad7c; }.actionable-insights article.attention { box-shadow:inset 0 3px #efa34a; }.actionable-insights article > small { color:#7770d5; font-size:8px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }.actionable-insights h3 { min-height:34px; margin:8px 0 5px; font-size:12px; line-height:1.35; }.actionable-insights p { min-height:42px; margin:0 0 10px; color:var(--muted); font-size:9px; line-height:1.45; }.actionable-insights button { display:flex; align-items:center; gap:5px; border:0; padding:0; background:transparent; color:#6254ca; font-size:9px; font-weight:700; text-align:left; cursor:pointer; }
+.view-patterns .section-head { margin-bottom: 16px; }
+.insight-explainer { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:0 0 12px; padding:14px 16px; border:1px solid #dfE3eb; border-radius:14px; background:#fff; }.insight-explainer > div { display:flex; align-items:center; gap:10px; }.insight-explainer svg { color:#6d5ed8; }.insight-explainer b,.insight-explainer small { display:block; }.insight-explainer b { font-size:11px; }.insight-explainer small { margin-top:3px; color:var(--muted); font-size:9px; }.insight-explainer button { border:0; border-radius:9px; padding:9px 11px; background:#ece9ff; color:#5f50c4; font-size:9px; font-weight:700; cursor:pointer; }
+.actionable-insights { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:10px; margin:0 0 12px; }.actionable-insights article { min-width:0; padding:13px; border:1px solid #e1e4e9; border-radius:14px; background:#fff; }.actionable-insights article.good { box-shadow:inset 0 3px #55ad7c; }.actionable-insights article.attention { box-shadow:inset 0 3px #efa34a; }.actionable-insights article > small { color:#7770d5; font-size:8px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }.actionable-insights h3 { min-height:0; margin:6px 0 4px; font-size:12px; line-height:1.35; }.actionable-insights p { min-height:0; margin:0 0 8px; color:var(--muted); font-size:9px; line-height:1.45; }.actionable-insights button { display:flex; align-items:center; gap:5px; border:0; padding:0; background:transparent; color:#6254ca; font-size:9px; font-weight:700; text-align:left; cursor:pointer; }
+.analytics-metrics { align-items:stretch; margin-top:0; margin-bottom:14px; }
+.analytics-metrics .metric { display:flex; flex-direction:column; justify-content:space-between; min-height:0; }
+.analytics-metrics .metric strong { font-family:"DM Sans",sans-serif; font-weight:700; font-size:30px; letter-spacing:-0.8px; }
 .analytics-board > .panel {
-  padding: 22px;
+  padding: 18px;
 }
 .wide-card {
   grid-column: span 1;
 }
 .line-chart {
   width: 100%;
-  height: 190px;
-  margin-top: 18px;
+  height: 132px;
+  margin-top: 10px;
   background: repeating-linear-gradient(
     to bottom,
     transparent 0,
-    transparent 46px,
-    #eeeae3 47px
+    transparent 31px,
+    #eeeae3 32px
   );
 }
 .line-chart polyline {
@@ -1795,7 +1800,13 @@ body {
 }
 .section-head h1,
 .hero h1 {
-  font-size: 40px;
+  font-size: 36px;
+}
+.hero {
+  align-items: center;
+}
+.hero-star {
+  color: #7165da !important;
 }
 .panel-heading h2 {
   font-size: 14px;
@@ -2179,8 +2190,16 @@ body {
   height: max-content;
 }
 .rail-card {
-  padding: 15px 16px;
-  height: max-content;
+  padding: 14px 15px;
+  height: auto;
+  min-height: 0;
+}
+.today-lower > .rail-card {
+  display: flex;
+  flex-direction: column;
+}
+.today-lower .activity-list {
+  flex: 1 1 auto;
 }
 .rail-head {
   display: flex;
@@ -2258,7 +2277,7 @@ body {
   margin-top: 11px;
 }
 .rail-project {
-  margin: 13px 0;
+  margin: 8px 0;
 }
 .rail-project header {
   display: flex;
@@ -2299,7 +2318,7 @@ body {
   font-size: 7px;
 }
 .today-lower .rail-suggestion {
-  margin-top: 14px;
+  margin-top: auto;
   border-radius: 14px;
 }
 .rail-suggestion {

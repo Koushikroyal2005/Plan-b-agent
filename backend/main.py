@@ -174,6 +174,104 @@ def planning_day() -> date:
     return date.today()
 
 
+def refresh_insights_demo_progress(conn: sqlite3.Connection) -> None:
+    """Keep a realistic demo mix: past completions, today done, and partial open work."""
+    today = planning_day()
+    today_iso = today.isoformat()
+    updates = [
+        # Completed earlier in the week (calendar + Insights trends).
+        (
+            "Team meeting",
+            "done",
+            55,
+            f"{(today - timedelta(days=1)).isoformat()}T14:00",
+            f"{(today - timedelta(days=1)).isoformat()}T15:00",
+            f"{(today - timedelta(days=1)).isoformat()}T15:05:00",
+        ),
+        (
+            "Parcel collection",
+            "done",
+            25,
+            f"{(today - timedelta(days=2)).isoformat()}T16:15",
+            f"{(today - timedelta(days=2)).isoformat()}T17:00",
+            f"{(today - timedelta(days=2)).isoformat()}T16:50:00",
+        ),
+        # Completed on today's plan.
+        (
+            "Review lecture notes",
+            "done",
+            40,
+            f"{today_iso}T09:00",
+            f"{today_iso}T09:45",
+            f"{today_iso}T09:50:00",
+        ),
+        (
+            "Daily planning review",
+            "done",
+            25,
+            f"{today_iso}T08:30",
+            f"{today_iso}T08:55",
+            f"{today_iso}T08:55:00",
+        ),
+        (
+            "Submit status update",
+            "done",
+            18,
+            f"{today_iso}T09:45",
+            f"{today_iso}T10:05",
+            f"{today_iso}T10:05:00",
+        ),
+        # Partially complete — still open, progress logged for Insights.
+        (
+            "Write launch FAQ",
+            "open",
+            50,
+            None,
+            f"{today_iso}T18:00",
+            f"{today_iso}T12:20:00",
+        ),
+        (
+            "Expense receipts cleanup",
+            "open",
+            18,
+            None,
+            f"{today_iso}T18:00",
+            f"{today_iso}T13:10:00",
+        ),
+        (
+            "Chapter 5 summaries",
+            "open",
+            30,
+            None,
+            f"{(today + timedelta(days=1)).isoformat()}T18:00",
+            f"{today_iso}T11:40:00",
+        ),
+        (
+            "Prepare project report",
+            "open",
+            35,
+            None,
+            f"{today_iso}T12:00",
+            f"{today_iso}T10:30:00",
+        ),
+    ]
+    for title, status, actual, fixed_start, deadline, updated_at in updates:
+        row = conn.execute(
+            "SELECT id FROM tasks WHERE title=?", (title,)
+        ).fetchone()
+        if not row:
+            continue
+        conn.execute(
+            """UPDATE tasks
+               SET status=?, actual_minutes=?,
+                   fixed_start=COALESCE(?, fixed_start),
+                   deadline=COALESCE(?, deadline),
+                   updated_at=?
+               WHERE title=?""",
+            (status, actual, fixed_start, deadline, updated_at, title),
+        )
+
+
 def get_setting(key: str, default: str | None = None) -> str | None:
     try:
         with db() as conn:
@@ -445,6 +543,212 @@ def init_db() -> None:
                         stamp,
                     ),
                 )
+            # History for Insights: completed past days, partial progress, and recent done work.
+            today = planning_day()
+            history_seed = [
+                # Fully completed on previous days (updated_at drives time_trend).
+                (
+                    "Morning standup notes",
+                    "Captured decisions from the standup.",
+                    20,
+                    20,
+                    -6,
+                    "09:15",
+                    "high",
+                    "fixed",
+                    0,
+                    ["work"],
+                    "done",
+                ),
+                (
+                    "Inbox zero pass",
+                    "Cleared urgent mail and filed follow-ups.",
+                    35,
+                    40,
+                    -5,
+                    "11:00",
+                    "medium",
+                    "flexible",
+                    1,
+                    ["work"],
+                    "done",
+                ),
+                (
+                    "Read research paper",
+                    "Annotated the methods section.",
+                    50,
+                    55,
+                    -4,
+                    "15:30",
+                    "medium",
+                    "flexible",
+                    1,
+                    ["study"],
+                    "done",
+                ),
+                (
+                    "Grocery run",
+                    "Weekly household restock.",
+                    40,
+                    35,
+                    -3,
+                    "18:00",
+                    "low",
+                    "flexible",
+                    0,
+                    ["errand"],
+                    "done",
+                ),
+                (
+                    "Draft design outline",
+                    "Outlined screens for the product review.",
+                    75,
+                    90,
+                    -2,
+                    "10:00",
+                    "high",
+                    "flexible",
+                    1,
+                    ["work"],
+                    "done",
+                ),
+                (
+                    "Practice quiz set",
+                    "Finished the chapter quiz with corrections.",
+                    45,
+                    45,
+                    -1,
+                    "16:00",
+                    "medium",
+                    "flexible",
+                    1,
+                    ["study"],
+                    "done",
+                ),
+                # Completed today (so Insights shows recent_done + today's progress).
+                (
+                    "Daily planning review",
+                    "Reviewed priorities and protected focus blocks.",
+                    25,
+                    25,
+                    0,
+                    "08:30",
+                    "medium",
+                    "fixed",
+                    0,
+                    ["work"],
+                    "done",
+                ),
+                (
+                    "Submit status update",
+                    "Posted the weekly status to the team channel.",
+                    15,
+                    18,
+                    0,
+                    "09:45",
+                    "high",
+                    "fixed",
+                    0,
+                    ["work"],
+                    "done",
+                ),
+                # Partially completed: still open, but actual progress logged.
+                (
+                    "Write launch FAQ",
+                    "Halfway through the customer FAQ draft.",
+                    90,
+                    45,
+                    0,
+                    None,
+                    "high",
+                    "flexible",
+                    1,
+                    ["work"],
+                    "open",
+                ),
+                (
+                    "Chapter 5 summaries",
+                    "Summarized the first half of the chapter.",
+                    60,
+                    25,
+                    1,
+                    None,
+                    "medium",
+                    "flexible",
+                    1,
+                    ["study"],
+                    "open",
+                ),
+                (
+                    "Expense receipts cleanup",
+                    "Sorted receipts; still need to upload two.",
+                    30,
+                    15,
+                    0,
+                    None,
+                    "low",
+                    "flexible",
+                    1,
+                    ["errand"],
+                    "open",
+                ),
+            ]
+            for (
+                title,
+                description,
+                duration,
+                actual,
+                day_offset,
+                fixed_clock,
+                priority,
+                flexibility,
+                splittable,
+                tags,
+                status,
+            ) in history_seed:
+                if conn.execute(
+                    "SELECT 1 FROM tasks WHERE title=?", (title,)
+                ).fetchone():
+                    continue
+                day = today + timedelta(days=day_offset)
+                day_iso = day.isoformat()
+                fixed_start = f"{day_iso}T{fixed_clock}" if fixed_clock else None
+                deadline = (
+                    f"{day_iso}T{fixed_clock}"
+                    if fixed_clock
+                    else f"{day_iso}T18:00"
+                )
+                created = f"{day_iso}T08:00:00"
+                updated = (
+                    f"{day_iso}T{fixed_clock}:00"
+                    if fixed_clock
+                    else f"{day_iso}T17:30:00"
+                )
+                conn.execute(
+                    """INSERT INTO tasks
+                    (id,title,description,duration_minutes,actual_minutes,deadline,earliest_start,fixed_start,priority,flexibility,splittable,tags_json,status,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        uid(),
+                        title,
+                        description,
+                        duration,
+                        actual,
+                        deadline,
+                        None,
+                        fixed_start,
+                        priority,
+                        flexibility,
+                        splittable,
+                        json.dumps(tags),
+                        status,
+                        created,
+                        updated,
+                    ),
+                )
+            # Always refresh demo completion/progress so Insights/Calendar stay demo-ready
+            # even when seed titles already existed from an earlier startup.
+            refresh_insights_demo_progress(conn)
         project_seed = [
             (
                 "Product launch",
@@ -545,6 +849,71 @@ def get_preferences() -> dict[str, Any]:
     return result
 
 
+def pin_start_on_day(day_value: str | date, *, clock: str | None = None) -> str:
+    """Build a fixed_start ISO local datetime on the given day (defaults to day_start)."""
+    prefs = get_preferences()
+    if isinstance(day_value, date):
+        day_iso = day_value.isoformat()
+    else:
+        day_iso = str(day_value).split("T", 1)[0]
+    hhmm = clock or prefs.get("day_start") or "09:00"
+    if re.fullmatch(r"\d{1,2}:\d{2}", hhmm):
+        hour, minute = hhmm.split(":")
+        hhmm = f"{int(hour):02d}:{minute}"
+    else:
+        hhmm = "09:00"
+    return f"{day_iso}T{hhmm}"
+
+
+def find_free_slot_on_day(
+    day_value: str | date,
+    duration_minutes: int,
+    *,
+    exclude_task_id: str | None = None,
+) -> str:
+    """Deterministically pick the first free window on a day that fits duration_minutes."""
+    prefs = get_preferences()
+    if isinstance(day_value, date):
+        day = day_value
+    else:
+        day = date.fromisoformat(str(day_value).split("T", 1)[0])
+    duration_minutes = max(5, min(720, int(duration_minutes or 60)))
+    day_start = datetime.combine(day, parse_clock(prefs.get("day_start"), time(9)))
+    day_end = datetime.combine(day, parse_clock(prefs.get("day_end"), time(21)))
+    buffer_minutes = max(0, int(prefs.get("default_buffer_minutes") or 0))
+    need = timedelta(minutes=duration_minutes)
+
+    busy: list[tuple[datetime, datetime]] = []
+    for task in get_tasks():
+        if task.get("status") != "open":
+            continue
+        if exclude_task_id and task.get("id") == exclude_task_id:
+            continue
+        fixed = parse_dt(task.get("fixed_start"))
+        if not fixed or fixed.date() != day:
+            continue
+        end = fixed + timedelta(minutes=int(task.get("duration_minutes") or 60))
+        busy.append((fixed, end))
+
+    busy.sort(key=lambda pair: pair[0])
+    merged: list[list[datetime]] = []
+    for start, end in busy:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    cursor = day_start
+    for start, end in merged:
+        if cursor + need <= start:
+            return cursor.strftime("%Y-%m-%dT%H:%M")
+        cursor = max(cursor, end + timedelta(minutes=buffer_minutes))
+    if cursor + need <= day_end:
+        return cursor.strftime("%Y-%m-%dT%H:%M")
+    # Day is full — still pin at day_start so the task lands on the right date.
+    return day_start.strftime("%Y-%m-%dT%H:%M")
+
+
 def priority_rank(value: str) -> int:
     return {"high": 0, "medium": 1, "low": 2}.get(value, 1)
 
@@ -580,10 +949,16 @@ def schedule_tasks(
 
     def scheduled_on_another_day(task: dict[str, Any]) -> bool:
         fixed = parse_dt(task.get("fixed_start"))
-        if fixed:
-            return fixed.date() != day
+        if fixed and fixed.date() != day:
+            return True
         earliest = parse_dt(task.get("earliest_start"))
-        return bool(earliest and earliest.date() > day)
+        if earliest and earliest.date() > day:
+            return True
+        # Soft deadlines on a future day must not be packed into today's plan.
+        deadline = parse_dt(task.get("deadline"))
+        if deadline and deadline.date() > day and (not fixed or fixed.date() != day):
+            return True
+        return False
 
     open_tasks = [
         t
@@ -1314,8 +1689,13 @@ def update_task(task_id: str, payload: TaskPatch):
         fields["tags_json"] = json.dumps(fields.pop("tags"))
     fields["updated_at"] = utcnow()
     with db() as conn:
-        if not conn.execute("SELECT id FROM tasks WHERE id=?", (task_id,)).fetchone():
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        if not row:
             raise HTTPException(404, "Task not found")
+        # Completions should always contribute to Insights even without a manual actual.
+        if fields.get("status") == "done" and fields.get("actual_minutes") is None:
+            if row["actual_minutes"] is None:
+                fields["actual_minutes"] = row["duration_minutes"]
         conn.execute(
             f"UPDATE tasks SET {', '.join(f'{key}=?' for key in fields)} WHERE id=?",
             (*fields.values(), task_id),
@@ -1531,106 +1911,217 @@ def list_activity(limit: int = 20):
     ]
 
 
+def _task_done_minutes(task: dict[str, Any]) -> int:
+    if task.get("actual_minutes") is not None:
+        return int(task["actual_minutes"])
+    return int(task.get("duration_minutes") or 0)
+
+
+def _task_anchor_date(task: dict[str, Any]) -> date | None:
+    for key in ("fixed_start", "deadline", "earliest_start"):
+        parsed = parse_dt(task.get(key))
+        if parsed:
+            return parsed.date()
+    return None
+
+
 @app.get("/api/patterns")
 def patterns(days: int = 7):
+    """Insights payload from live tasks + today's calendar — not synthetic advice scores."""
     days = max(1, min(days, 30))
     tasks = get_tasks(True)
-    completed = [
-        t
-        for t in tasks
-        if t["status"] == "done" and t.get("actual_minutes") is not None
+    day_plan = current_day()
+    today = planning_day()
+    open_tasks = [task for task in tasks if task["status"] == "open"]
+    done_tasks = [task for task in tasks if task["status"] == "done"]
+    active = open_tasks + done_tasks
+    done_count = len(done_tasks)
+    open_count = len(open_tasks)
+    completion_rate = round(done_count / max(1, len(active)) * 100)
+
+    done_minutes = sum(_task_done_minutes(task) for task in done_tasks)
+    open_minutes = sum(int(task.get("duration_minutes") or 0) for task in open_tasks)
+    total_minutes = done_minutes + open_minutes
+    minutes_completion_rate = round(done_minutes / max(1, total_minutes) * 100)
+
+    overdue_tasks = []
+    for task in open_tasks:
+        anchor = _task_anchor_date(task)
+        if anchor and anchor < today:
+            overdue_tasks.append(task)
+
+    with_actual = [
+        task
+        for task in done_tasks
+        if task.get("actual_minutes") is not None
     ]
     delta = (
         round(
-            sum(t["actual_minutes"] - t["duration_minutes"] for t in completed)
-            / len(completed)
+            sum(task["actual_minutes"] - task["duration_minutes"] for task in with_actual)
+            / len(with_actual)
         )
-        if completed
+        if with_actual
         else 0
     )
-    with db() as conn:
-        recovered = conn.execute(
-            "SELECT COUNT(*) FROM plans WHERE status IN ('applied','restored')"
-        ).fetchone()[0]
-    done_count = sum(1 for task in tasks if task["status"] == "done")
-    active_count = sum(1 for task in tasks if task["status"] == "open")
-    total = max(1, done_count + active_count)
-    completion_rate = round(done_count / total * 100)
-    scheduled = sum(
-        task["duration_minutes"] for task in tasks if task["status"] != "archived"
-    )
-    focus_score = max(
-        35, min(96, 82 - max(delta, 0) - active_count * 2 + recovered * 3)
-    )
-    project_data = get_projects()
+    category_deltas: dict[str, list[int]] = {}
+    for task in with_actual:
+        tags = task.get("tags") or []
+        name = str(tags[0]).title() if tags else "General"
+        category_deltas.setdefault(name, []).append(
+            int(task["actual_minutes"]) - int(task["duration_minutes"])
+        )
+    categories = [
+        {
+            "name": name,
+            "delta": round(sum(values) / len(values)),
+            "sample_size": len(values),
+        }
+        for name, values in sorted(category_deltas.items())
+    ]
+
     focus_minutes = sum(
-        task["duration_minutes"]
-        for task in tasks
-        if task["status"] != "archived" and task["flexibility"] == "flexible"
+        int(task.get("duration_minutes") or 0)
+        for task in active
+        if task.get("flexibility") == "flexible"
     )
     fixed_minutes = sum(
-        task["duration_minutes"]
-        for task in tasks
-        if task["status"] != "archived" and task["flexibility"] == "fixed"
+        int(task.get("duration_minutes") or 0)
+        for task in active
+        if task.get("flexibility") == "fixed"
     )
-    admin_minutes = max(0, scheduled - focus_minutes - fixed_minutes)
+    other_minutes = max(0, total_minutes - focus_minutes - fixed_minutes)
+
+    today_blocks = [
+        block
+        for block in day_plan.get("blocks", [])
+        if block.get("kind") != "break" and block.get("task_id")
+    ]
+    today_done = 0
+    today_remaining_minutes = 0
+    today_done_minutes = 0
+    for block in today_blocks:
+        task = next((item for item in tasks if item["id"] == block.get("task_id")), None)
+        minutes = int(block.get("minutes") or 0)
+        if task and task["status"] == "done":
+            today_done += 1
+            today_done_minutes += minutes
+        else:
+            today_remaining_minutes += minutes
+    today_total = len(today_blocks)
+    today_scheduled_minutes = sum(int(block.get("minutes") or 0) for block in today_blocks)
+    today_iso = today.isoformat()
+    today_completed_tasks = [
+        task
+        for task in done_tasks
+        if (task.get("updated_at") or "").startswith(today_iso)
+        or (_task_anchor_date(task) == today)
+    ]
+    pending_with_progress = [
+        task
+        for task in open_tasks
+        if task.get("actual_minutes") is not None and int(task.get("actual_minutes") or 0) > 0
+    ]
+    pending_logged = sum(int(task.get("actual_minutes") or 0) for task in pending_with_progress)
+    pending_planned = sum(
+        int(task.get("duration_minutes") or 0) for task in pending_with_progress
+    )
+    pending_progress_percent = round(pending_logged / max(1, pending_planned) * 100)
+    metrics = day_plan.get("metrics") or {}
+
     labels: list[str] = []
     activity: list[int] = []
     time_trend: list[float] = []
-    focus_trend: list[int] = []
-    today = planning_day()
+    planned_trend: list[float] = []
     for offset in range(days - 1, -1, -1):
         point = today - timedelta(days=offset)
         labels.append(point.strftime("%a"))
         completed_minutes = sum(
-            task.get("actual_minutes") or 0
-            for task in completed
+            _task_done_minutes(task)
+            for task in done_tasks
             if (task.get("updated_at") or "").startswith(point.isoformat())
         )
-        time_trend.append(round(completed_minutes / 60, 1))
-        activity.append(min(100, completed_minutes))
-        focus_trend.append(focus_score if point == today else 0)
-    groups: dict[str, list[int]] = {}
-    for task in completed:
-        name = (task.get("tags") or ["General"])[0].title()
-        groups.setdefault(name, []).append(
-            task["actual_minutes"] - task["duration_minutes"]
+        planned_minutes = sum(
+            int(task.get("duration_minutes") or 0)
+            for task in active
+            if _task_anchor_date(task) == point
         )
-    categories = [
-        {"name": name, "delta": round(sum(values) / len(values))}
-        for name, values in groups.items()
-    ]
+        time_trend.append(round(completed_minutes / 60, 1))
+        planned_trend.append(round(planned_minutes / 60, 1))
+        activity.append(min(100, max(completed_minutes, planned_minutes // 2)))
+
+    project_data = get_projects()
     return {
-        "sample_size": len(completed),
+        "sample_size": len(done_tasks),
         "average_estimate_delta": delta,
-        "recovered_plans": recovered,
-        "insufficient_data": len(completed) < 3,
+        "insufficient_data": len(active) == 0,
+        "open_count": open_count,
+        "done_count": done_count,
+        "overdue_count": len(overdue_tasks),
         "completion_rate": completion_rate,
-        "focus_score": focus_score,
-        "balance_score": max(
-            40, min(96, 100 - abs(focus_minutes - fixed_minutes) // 6)
-        ),
-        "scheduled_hours": round(scheduled / 60, 1),
+        "minutes_completion_rate": minutes_completion_rate,
+        "done_minutes": done_minutes,
+        "open_minutes": open_minutes,
+        "scheduled_hours": round(total_minutes / 60, 1),
         "activity": activity,
         "week_labels": labels,
         "time_trend": time_trend,
-        "focus_trend": focus_trend,
+        "planned_trend": planned_trend,
         "range_days": days,
-        "history_note": "Charts count recorded completion time. Days without completed tasks stay at zero.",
+        "history_note": "Completed hours use actual time when recorded, otherwise planned duration. Planned load uses each task’s scheduled day.",
+        "today": {
+            "date": today.isoformat(),
+            "blocks_total": today_total,
+            "blocks_done": max(today_done, len(today_completed_tasks)),
+            "scheduled_minutes": today_scheduled_minutes,
+            "done_minutes": today_done_minutes
+            or sum(_task_done_minutes(task) for task in today_completed_tasks),
+            "remaining_minutes": today_remaining_minutes,
+            "free_buffer_minutes": int(metrics.get("free_buffer_minutes") or 0),
+            "risky_tasks": int(metrics.get("risky_tasks") or 0),
+            "progress_percent": round(
+                max(today_done, len(today_completed_tasks)) / max(1, today_total) * 100
+            )
+            if today_total
+            else round(len(today_completed_tasks) / max(1, len(today_completed_tasks) + len(pending_with_progress)) * 100),
+            "pending_count": len(pending_with_progress),
+            "pending_progress_percent": pending_progress_percent,
+            "pending_logged_minutes": pending_logged,
+            "pending_planned_minutes": pending_planned,
+        },
+        "today_completed_count": len(today_completed_tasks),
+        "pending_progress_percent": pending_progress_percent,
         "time_breakdown": [
-            {"name": "Focus", "minutes": focus_minutes, "color": "#e4794c"},
-            {"name": "Meetings", "minutes": fixed_minutes, "color": "#657c9a"},
-            {"name": "Admin", "minutes": admin_minutes, "color": "#71886b"},
+            {"name": "Flexible focus", "minutes": focus_minutes, "color": "#e4794c"},
+            {"name": "Fixed", "minutes": fixed_minutes, "color": "#657c9a"},
+            {"name": "Other", "minutes": other_minutes, "color": "#71886b"},
         ],
         "goals": [
             {
-                "name": p["name"],
-                "progress": p["progress"],
-                "target_date": p["target_date"],
+                "name": project["name"],
+                "progress": project["progress"],
+                "target_date": project["target_date"],
+                "task_count": project.get("task_count") or 0,
+                "completed_count": project.get("completed_count") or 0,
             }
-            for p in project_data
+            for project in project_data
         ],
+        "recent_done": [
+            {
+                "title": task["title"],
+                "minutes": _task_done_minutes(task),
+                "updated_at": task.get("updated_at"),
+            }
+            for task in sorted(
+                done_tasks,
+                key=lambda item: item.get("updated_at") or "",
+                reverse=True,
+            )[:5]
+        ],
+        # Kept for older UI fields; prefer the explicit counts above.
+        "focus_score": minutes_completion_rate,
+        "balance_score": completion_rate,
         "categories": categories,
+        "focus_trend": time_trend,
     }
 
 
@@ -1824,6 +2315,15 @@ class Services:
             disruption_minutes=minutes, reason=reason[:500], target_task_id=target_task_id,
             protect_task_ids=protect_ids, shorten=shorten, defer_task_ids=defer_ids,
         ))
+
+    @staticmethod
+    def find_free_slot_on_day(
+        day_value: str | date,
+        duration_minutes: int,
+        *,
+        exclude_task_id: str | None = None,
+    ) -> str:
+        return find_free_slot_on_day(day_value, duration_minutes, exclude_task_id=exclude_task_id)
 
 
 def assistant_engine() -> AssistantEngine:

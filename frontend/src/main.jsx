@@ -705,10 +705,13 @@ function TodayView({
   return (
     <View id="dashboard">
       <div className="hero">
-        <div>
+        <div className="hero-copy">
           <Eyebrow>{headingDate}</Eyebrow>
           <h1>
-            Good morning, {displayName} <span>✦</span>
+            Good morning, {displayName}
+            <span className="hero-star" aria-hidden="true">
+              ✦
+            </span>
           </h1>
           <p>
             {day.plan_stale
@@ -732,7 +735,8 @@ function TodayView({
             <Zap size={14} /> Something changed
           </Button>
           <Button onClick={onToggleDemo}>
-            <Sparkles size={14} /> {demo.active ? "Exit judge demo" : "Load judge demo"}
+            <Sparkles size={14} />{" "}
+            {demo.active ? "Exit judge demo" : "Load judge demo"}
           </Button>
           <Button primary onClick={onAdd}>
             <Plus size={15} /> Add task
@@ -1960,17 +1964,41 @@ function PatternsView({ data: initialData, onDiscuss }) {
       evidence: `Your balance score is ${balance}/100 based on focus, fixed work and buffers.`,
       action: balance >= 65 ? "Keep this balance in next week’s plan" : "Rebalance my next seven days",
     });
+    const todayDone = Number(data.today?.blocks_done || data.today_completed_count || 0);
+    const pendingPct = Number(data.today?.pending_progress_percent || 0);
+    if (todayDone || pendingPct) {
+      items.push({
+        tone: todayDone >= 2 ? "good" : "attention",
+        label: "Today",
+        title: todayDone
+          ? `${todayDone} task${todayDone === 1 ? "" : "s"} finished today`
+          : "Today still has unfinished commitments",
+        evidence: pendingPct
+          ? `Pending work is about ${pendingPct}% complete based on logged progress.`
+          : `${data.today?.blocks_total || 0} blocks remain on today's plan.`,
+        action: "Show what I should finish next today",
+      });
+    }
     const inaccurate = data.categories?.find((item) => Math.abs(item.delta) >= 15);
     if (inaccurate) items.push({ tone: "attention", label: "Estimates", title: `${inaccurate.name} estimates need calibration`, evidence: `Actual time differs from estimates by ${inaccurate.delta > 0 ? "+" : ""}${inaccurate.delta} minutes on average.`, action: `Adjust future ${inaccurate.name} estimates using this pattern` });
     return items.slice(0, 4);
   }, [data]);
-  const points = (values, max = 100) =>
-    values
+  const trendCeiling = (values) => {
+    const peak = Math.max(0, ...values.map((value) => Number(value) || 0));
+    return Math.max(1, peak * 1.15);
+  };
+  const timeChartMax = trendCeiling(timeTrend);
+  const focusChartMax = trendCeiling(focusTrend.length ? focusTrend : timeTrend);
+  const points = (values, max) => {
+    const ceiling = Math.max(1, Number(max) || 1);
+    return values
       .map(
         (value, index) =>
-          `${index * (100 / Math.max(1, values.length - 1))},${100 - (value / max) * 85}`,
+          `${index * (100 / Math.max(1, values.length - 1))},${100 - (Number(value) / ceiling) * 85}`,
       )
       .join(" ");
+  };
+  const todayStats = data?.today || {};
   return (
     <View id="patterns">
       <div className="section-head">
@@ -1995,6 +2023,33 @@ function PatternsView({ data: initialData, onDiscuss }) {
         <div><Sparkles size={17} /><span><b>Your planning intelligence</b><small>Every insight below is calculated from your tasks, scheduled time and completed work—not generic advice.</small></span></div>
         <button onClick={() => onDiscuss("Explain my productivity insights in simple language")}>Ask Plan B to explain</button>
       </div>
+      <div className="analytics-metrics">
+        <Metric
+          label="Completed today"
+          value={todayStats.blocks_done ?? data?.today_completed_count ?? 0}
+          unit=""
+          note={`${todayStats.blocks_total || 0} blocks on today's plan`}
+          good
+        />
+        <Metric
+          label="Pending progress"
+          value={todayStats.pending_progress_percent ?? 0}
+          unit="%"
+          note={`${todayStats.pending_count || 0} open tasks with logged progress`}
+        />
+        <Metric
+          label="Week completion"
+          value={data?.completion_rate || 0}
+          unit="%"
+          note={`${data?.done_count || 0} done · ${data?.open_count || 0} open`}
+        />
+        <Metric
+          label="Tracked time"
+          value={data?.scheduled_hours || 0}
+          unit="hrs"
+          note={`${Math.round((data?.done_minutes || 0) / 60 * 10) / 10} hrs completed`}
+        />
+      </div>
       <div className="actionable-insights">
         {insights.map((item) => (
           <article className={item.tone} key={`${item.label}-${item.title}`}>
@@ -2002,33 +2057,6 @@ function PatternsView({ data: initialData, onDiscuss }) {
             <button onClick={() => onDiscuss(`${item.action}. Explain the evidence and preview any changes before applying them.`)}>{item.action} <ArrowRight size={13} /></button>
           </article>
         ))}
-      </div>
-      <div className="analytics-metrics">
-        <Metric
-          label="Task progress"
-          value={data?.completion_rate || 0}
-          unit="%"
-          note="completed commitments"
-        />
-        <Metric
-          label="Focus score"
-          value={data?.focus_score || 0}
-          unit="/100"
-          note="quality of protected work"
-          good
-        />
-        <Metric
-          label="Balance"
-          value={data?.balance_score || 0}
-          unit="/100"
-          note="focus vs fixed work"
-        />
-        <Metric
-          label="Tracked time"
-          value={data?.scheduled_hours || 0}
-          unit="hrs"
-          note="scheduled workload"
-        />
       </div>
       <div className="analytics-board">
         <div className="panel trend-card wide-card">
@@ -2044,7 +2072,7 @@ function PatternsView({ data: initialData, onDiscuss }) {
             viewBox="0 0 100 100"
             preserveAspectRatio="none"
           >
-            <polyline points={points(timeTrend, 7)} />
+            <polyline points={points(timeTrend, timeChartMax)} />
           </svg>
           <div className="chart-labels">
             {labels.map((label, index) => (
@@ -2105,7 +2133,7 @@ function PatternsView({ data: initialData, onDiscuss }) {
             viewBox="0 0 100 100"
             preserveAspectRatio="none"
           >
-            <polyline points={points(focusTrend)} />
+            <polyline points={points(focusTrend, focusChartMax)} />
           </svg>
           <div className="chart-labels">
             {labels.map((label, index) => (

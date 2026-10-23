@@ -15,6 +15,13 @@ import {
   Users,
   X,
 } from "lucide-react";
+import {
+  CALENDAR_DAY_START,
+  CALENDAR_PX_PER_HOUR,
+  eventHeightPercent,
+  eventTopPercent,
+  layoutDayEvents,
+} from "./calendarLayout";
 import "./calendar.css";
 
 const DAY = 86400000;
@@ -60,15 +67,21 @@ const minutesOf = (value, fallback = 540) => {
 function makeEvents(tasks, day, anchor) {
   const planDate = day?.date || keyOf(anchor);
   const plannedIds = new Set(day?.blocks?.map((block) => block.task_id));
-  const planned = (day?.blocks || []).map((block, index) => ({
-    ...block,
-    id: block.task_id || `plan-${index}`,
-    date: keyOf(block.start_iso) || planDate,
-    startMinutes: minutesOf(block.start_iso || block.start, 540 + index * 60),
-    duration: block.minutes || 60,
-    tone: COLORS[index % 4],
-    source: "plan",
-  }));
+  const planned = (day?.blocks || []).map((block, index) => {
+    const task = tasks.find((item) => item.id === block.task_id);
+    return {
+      ...block,
+      id: block.task_id || `plan-${index}`,
+      title: block.title || task?.title,
+      description: task?.description || block.description || "",
+      status: task?.status || block.status || "open",
+      date: keyOf(block.start_iso) || planDate,
+      startMinutes: minutesOf(block.start_iso || block.start, 540 + index * 60),
+      duration: block.minutes || 60,
+      tone: COLORS[index % 4],
+      source: "plan",
+    };
+  });
   const remaining = tasks
     .filter((task) => task.status !== "archived" && !plannedIds.has(task.id))
     .map((task, index) => {
@@ -86,6 +99,7 @@ function makeEvents(tasks, day, anchor) {
         end: clock(startMinutes + task.duration_minutes),
         label: task.priority,
         kind: task.flexibility,
+        description: task.description || "",
         tone: COLORS[(index + 1) % 4],
         source: "task",
       };
@@ -480,10 +494,11 @@ function Breakdown({ events }) {
 
 function TimelineBoard({ days, events, onOpenDay, onEvent, onAdd }) {
   const createAt = (event, date) => {
-    if (event.target.closest(".cal-event") || event.target.closest(".add-slot")) return;
+    if (event.target.closest(".cal-event")) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const offset = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
-    const rawMinutes = 480 + (offset / 64) * 60;
+    const rawMinutes =
+      CALENDAR_DAY_START + (offset / CALENDAR_PX_PER_HOUR) * 60;
     const startMinutes = Math.max(480, Math.min(1260, Math.round(rawMinutes / 15) * 15));
     const endMinutes = Math.min(1435, startMinutes + 60);
     const time = (minutes) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
@@ -525,34 +540,61 @@ function TimelineBoard({ days, events, onOpenDay, onEvent, onAdd }) {
         <div className="timeline-days">
           {days.map((date) => {
             const key = keyOf(date);
+            const dayEvents = layoutDayEvents(
+              events.filter((event) => event.date === key),
+            );
             return (
-              <div className="timeline-day" key={key} onClick={(event) => createAt(event, date)} title="Click an empty time to create a task">
+              <div
+                className="timeline-day"
+                key={key}
+                onClick={(event) => createAt(event, date)}
+                title="Click an empty time to create a task"
+              >
                 {HOURS.map((hour) => (
                   <i className="hour-line" key={hour} />
                 ))}
-                {events
-                  .filter((event) => event.date === key)
-                  .map((event) => (
+                {dayEvents.map((event) => {
+                  const columns = event.layoutColumns || 1;
+                  const column = event.layoutColumn || 0;
+                  const widthPct = 100 / columns;
+                  const gutter = 3;
+                  const description = (event.description || "").trim();
+                  const compact = (event.duration || 0) < 25;
+                  return (
                     <button
-                      className={`cal-event ${event.tone} ${event.status === "done" ? "completed" : ""}`}
+                      type="button"
+                      className={`cal-event ${event.tone} ${event.status === "done" ? "completed" : ""} ${compact ? "compact" : ""}`}
                       style={{
-                        "--top": `${Math.max(0, ((event.startMinutes - 480) / 60) * 64)}px`,
-                        "--height": `${Math.max(42, (event.duration / 60) * 64 - 4)}px`,
+                        "--top": `${eventTopPercent(event)}%`,
+                        "--height": `${eventHeightPercent(event, dayEvents)}%`,
+                        "--left": `calc(${column * widthPct}% + ${gutter}px)`,
+                        "--width": `calc(${widthPct}% - ${gutter * 2}px)`,
                       }}
-                      onClick={(click) => { click.stopPropagation(); onEvent(event); }}
-                      key={`${event.id}-${event.startMinutes}`}
+                      onClick={(click) => {
+                        click.stopPropagation();
+                        onEvent(event);
+                      }}
+                      key={`${event.id}-${event.startMinutes}-${column}`}
+                      title={`${event.title} · ${clock(event.startMinutes)} – ${clock(event.startMinutes + event.duration)}`}
+                      aria-label={`${event.title}, ${clock(event.startMinutes)} to ${clock(event.startMinutes + event.duration)}`}
                     >
                       <b>{event.title}</b>
-                      <small>
-                        {clock(event.startMinutes)} –{" "}
-                        {clock(event.startMinutes + event.duration)}
-                      </small>
-                      <span>{event.label || event.kind}</span>
+                      {!compact && (
+                        <>
+                          <small>
+                            {clock(event.startMinutes)} –{" "}
+                            {clock(event.startMinutes + event.duration)}
+                          </small>
+                          {description ? (
+                            <p className="cal-event-desc">{description}</p>
+                          ) : (
+                            <span>{event.label || event.kind}</span>
+                          )}
+                        </>
+                      )}
                     </button>
-                  ))}
-                <button className="add-slot" onClick={(click) => { click.stopPropagation(); const dateKey = keyOf(date); onAdd({ fixed_start: `${dateKey}T09:00`, deadline: `${dateKey}T10:00`, duration_minutes: 60, flexibility: "fixed", priority: "medium", splittable: false }); }} title="Add event">
-                  <Plus size={17} />
-                </button>
+                  );
+                })}
               </div>
             );
           })}

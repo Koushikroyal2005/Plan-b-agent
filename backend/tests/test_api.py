@@ -293,6 +293,131 @@ def test_day_after_tomorrow_time_range_is_parsed_without_fake_title(client: Test
     assert slots["fixed_start"].endswith("T14:00")
 
 
+def test_free_slot_skips_existing_fixed_block_on_same_day(client: TestClient):
+    from datetime import date, timedelta
+
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    client.post(
+        "/api/tasks",
+        json={
+            "title": "Existing meeting",
+            "duration_minutes": 60,
+            "flexibility": "fixed",
+            "fixed_start": f"{tomorrow}T09:00",
+            "deadline": f"{tomorrow}T09:00",
+            "priority": "medium",
+            "splittable": False,
+            "tags": [],
+        },
+    )
+    body = client.post(
+        "/api/assistant",
+        json={
+            "message": f"Create a gym task tomorrow for 2 hours",
+            "session_id": "free-slot-regression",
+        },
+    ).json()
+    slots = body["pending_action"]["slots"]
+    assert slots["title"].strip().lower() == "gym"
+    assert slots["duration_minutes"] == 120
+    assert slots["fixed_start"].startswith(tomorrow)
+    # Should not collide with 09:00–10:00 meeting (buffer may push later).
+    assert slots["fixed_start"] >= f"{tomorrow}T10:00"
+
+
+def test_gym_task_on_25th_oct_is_pinned_to_that_day_not_today(client: TestClient):
+    year = __import__("datetime").date.today().year
+    body = client.post(
+        "/api/assistant",
+        json={
+            "message": "I want you to create a task of gym for 25th October for 2 hrs",
+            "session_id": "gym-oct25-regression",
+        },
+    ).json()
+    assert body["pending_action"]["intent"] == "tasks.create"
+    assert body["state"] == "confirming"
+    slots = body["pending_action"]["slots"]
+    assert slots["title"] and slots["title"].strip().lower() == "gym"
+    assert slots["duration_minutes"] == 120
+    assert slots["fixed_start"].startswith(f"{year}-10-25")
+    assert slots["flexibility"] == "fixed"
+
+    confirmed = client.post(
+        "/api/assistant",
+        json={"message": "yes", "session_id": "gym-oct25-regression"},
+    ).json()
+    assert confirmed["state"] == "completed"
+    tasks = client.get("/api/tasks").json()
+    gym = next(t for t in tasks if t["title"] and t["title"].lower() == "gym")
+    assert gym["fixed_start"].startswith(f"{year}-10-25")
+    today = client.get("/api/day").json()
+    assert not any(block.get("task_id") == gym["id"] for block in today.get("blocks", []))
+
+
+def test_natural_homework_schedule_tomorrow_is_create_task_not_get_schedule(client: TestClient):
+    from datetime import date, timedelta
+
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    body = client.post(
+        "/api/assistant",
+        json={
+            "message": "I want a homework schedule tomorrow for 2 hours.",
+            "session_id": "homework-tomorrow-regression",
+        },
+    ).json()
+    assert body["pending_action"]["intent"] == "tasks.create"
+    assert body["state"] == "confirming"
+    slots = body["pending_action"]["slots"]
+    assert slots["title"] and "homework" in slots["title"].lower()
+    assert slots["duration_minutes"] == 120
+    assert slots["fixed_start"].startswith(tomorrow)
+    assert slots["flexibility"] == "fixed"
+    assert "How long" not in body["say"]
+
+    confirmed = client.post(
+        "/api/assistant",
+        json={"message": "yes", "session_id": "homework-tomorrow-regression"},
+    ).json()
+    assert confirmed["state"] == "completed"
+    tasks = client.get("/api/tasks").json()
+    homework = next(t for t in tasks if t["title"] and "homework" in t["title"].lower())
+    assert homework["fixed_start"].startswith(tomorrow)
+    assert homework["duration_minutes"] == 120
+    day = client.get("/api/day").json()
+    assert not any(
+        block.get("task_id") == homework["id"] for block in day.get("blocks", [])
+    )
+
+
+def test_garbled_create_schedule_followup_merges_prior_homework_context(client: TestClient):
+    from datetime import date, timedelta
+
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    session = "garbled-title-regression"
+    client.post(
+        "/api/assistant",
+        json={"message": "I want a homework schedule tomorrow for 2 hours.", "session_id": session},
+    )
+    # Simulate a retry phrasing that used to become the title.
+    follow = client.post(
+        "/api/assistant",
+        json={"message": "cancel", "session_id": session},
+    ).json()
+    assert follow["state"] == "completed" or "Cancelled" in follow["say"]
+
+    again = client.post(
+        "/api/assistant",
+        json={"message": "Then can you create a schedule for tomorrow?", "session_id": session},
+    ).json()
+    assert again["pending_action"]["intent"] == "tasks.create"
+    slots = again["pending_action"]["slots"]
+    assert "can you create" not in (slots.get("title") or "").lower()
+    assert slots.get("title") and "homework" in slots["title"].lower()
+    assert slots["duration_minutes"] == 120
+    assert slots["fixed_start"].startswith(tomorrow)
+    assert again["state"] == "confirming"
+
+
 def test_assistant_history_restores_message_metadata(client: TestClient):
     session = "history-regression"
     client.post("/api/assistant", json={"message": "Plan my day", "session_id": session})
@@ -390,6 +515,8 @@ def test_preferences_change_breaks_and_activity_is_real(client: TestClient):
 
     patterns = client.get("/api/patterns?days=7").json()
     assert patterns["time_trend"] != [3.2, 4.1, 3.6, 5.4, 4.7, 2.8, 3.9]
-    assert patterns["categories"] == []
-    assert "recorded completion time" in patterns["history_note"]
+    assert "open_count" in patterns and "done_count" in patterns
+    assert "today" in patterns and "blocks_total" in patterns["today"]
+    assert "planned_trend" in patterns
+    assert "Completed hours" in patterns["history_note"] or "completed" in patterns["history_note"].lower()
     assert len(patterns["week_labels"]) == 7

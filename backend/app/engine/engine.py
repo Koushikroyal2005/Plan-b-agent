@@ -187,6 +187,10 @@ class AssistantEngine:
         step = plan.steps[index]
         kind = pending["kind"]
         if command == "cancel" or normalize(text) in CANCEL:
+            if step.capability == "tasks.create":
+                ctx.memory["last_create_draft"] = {
+                    k: v for k, v in step.arguments.items() if k != "_preview" and v is not None
+                }
             ctx.memory.pop("pending", None)
             run.ui.append({"type": "close_modal"})
             return self._respond(ctx, run, "Cancelled. I did not change anything.", plan=plan)

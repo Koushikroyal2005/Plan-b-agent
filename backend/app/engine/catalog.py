@@ -74,6 +74,8 @@ class CreateTaskArgs(BaseModel):
     duration_minutes: int | None = Field(default=None, ge=5, le=720)
     deadline: str | None = Field(default=None, description="ISO local datetime YYYY-MM-DDTHH:MM")
     fixed_start: str | None = Field(default=None, description="ISO local datetime when the task is booked at a set time")
+    flexibility: Literal["fixed", "flexible"] | None = None
+    use_free_slot: bool = False
     priority: Literal["low", "medium", "high"] = "medium"
     project: str | None = None
     description: str = ""
@@ -204,11 +206,17 @@ def prepare_create_task(args: dict[str, Any], ctx: ExecContext):
     project_id = None
     if args.get("project"):
         project_id = ctx.resolver.project(args["project"])["id"]
+    fixed_start = args.get("fixed_start")
+    duration = int(args["duration_minutes"])
+    if args.get("use_free_slot") and fixed_start and duration:
+        day = str(fixed_start).split("T", 1)[0]
+        fixed_start = ctx.services.find_free_slot_on_day(day, duration)
     normalized = {
         "title": args["title"].strip()[:160],
-        "duration_minutes": int(args["duration_minutes"]),
+        "duration_minutes": duration,
         "deadline": args.get("deadline"),
-        "fixed_start": args.get("fixed_start"),
+        "fixed_start": fixed_start,
+        "flexibility": args.get("flexibility"),
         "priority": args.get("priority") or "medium",
         "description": args.get("description") or "",
         "project": args.get("project"),
@@ -239,10 +247,11 @@ def amend_create_task(args: dict[str, Any], text: str, ctx: ExecContext):
 
 
 def create_task(args: dict[str, Any], ctx: ExecContext) -> Outcome:
-    values = {k: v for k, v in args.items() if k != "project"}
-    fixed = bool(values.get("fixed_start"))
+    values = {k: v for k, v in args.items() if k not in {"project", "flexibility", "use_free_slot"}}
+    fixed = values.get("flexibility") == "fixed" or bool(values.get("fixed_start"))
     task = ctx.services.create_task({**values, "flexibility": "fixed" if fixed else "flexible",
                                      "splittable": not fixed, "tags": []})
+    ctx.memory.pop("last_create_draft", None)
     ctx.invalidate()
     verified = any(t["id"] == task["id"] and t["status"] == "open" for t in ctx.services.tasks())
     return Outcome(

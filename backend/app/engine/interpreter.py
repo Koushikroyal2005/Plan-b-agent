@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import date, time, timedelta
 from typing import Any
 
+from app.slot_extract import extract_task_slots, has_explicit_clock
+
 from .catalog import PAGES
 from .language import (
     clock_time, datetime_reference, day_reference, duration_minutes, normalize, ordinal, strip_filler, task_details,
@@ -235,9 +237,36 @@ def interpret(text: str, ctx: InterpretContext) -> Plan:
             confidence=0.95,
         )
 
-    if (re.search(r"\b(create|add|make|new|put|schedule)\b.*\btask\b|^task\b|\bremind me to\b|\bi need to\b|\badd\b .+ \bto my (list|tasks|day|calendar)\b", lower)
-            or re.search(r"\b(create|add|make|book|block)\b.*\b(schedule|block|slot|session|event|time)\b.*\b(from|at)\s+\d", lower)):
-        details = task_details(raw, ctx.today)
+    create_intent = (
+        re.search(r"\b(create|add|make|new|put|schedule)\b.*\btask\b|^task\b|\bremind me to\b|\bi need to\b|\badd\b .+ \bto my (list|tasks|day|calendar)\b", lower)
+        or re.search(r"\b(create|add|make|book|block)\b.*\b(schedule|block|slot|session|event|time)\b.*\b(from|at)\s+\d", lower)
+        or (
+            re.search(r"\b(create|add|make|want|need|can you)\b.*\bschedule\b", lower)
+            and (duration_minutes(lower) or ctx.memory.get("last_create_draft"))
+        )
+        or re.search(r"\b(homework|assignment|essay|gym|workout|study)\s+schedule\b", lower)
+        or (
+            re.search(r"\bschedule\b", lower)
+            and duration_minutes(lower)
+            and re.search(r"\b(tomorrow|today|tonight|day after tomorrow|\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d)", lower)
+        )
+    )
+    if create_intent:
+        if has_explicit_clock(raw):
+            details = task_details(raw, ctx.today)
+        else:
+            details = extract_task_slots(raw, day_start="09:00")
+            if not details.get("title") and not details.get("duration_minutes"):
+                details = task_details(raw, ctx.today)
+        draft = ctx.memory.get("last_create_draft") or {}
+        for key in ("title", "duration_minutes", "fixed_start", "deadline", "flexibility"):
+            if not details.get(key) and draft.get(key):
+                details[key] = draft[key]
+        title = (details.get("title") or "").lower()
+        if title and re.search(r"\b(can you|create a schedule|want you)\b", title):
+            details["title"] = draft.get("title") or details.get("title")
+        if details.get("fixed_start") and details.get("flexibility") == "fixed" and not has_explicit_clock(raw):
+            details["use_free_slot"] = True
         priority = next((p for p in ("high", "low") if f"{p} priority" in lower or (p == "high" and "urgent" in lower)), "medium")
         return _plan("Create a task", PlanStep(capability="tasks.create", arguments={**details, "priority": priority}))
 
@@ -314,7 +343,7 @@ def interpret(text: str, ctx: InterpretContext) -> Plan:
         target = _target(raw)
         return _plan("Check risks", PlanStep(capability="schedule.assess", arguments={"target": target}))
 
-    if re.search(r"\b(schedule|my day|what'?s next|what is next|agenda|plan for (today|tomorrow)|what'?s on|what do i have|day look)\b", lower):
+    if re.search(r"\b(schedule|my day|what'?s next|what is next|agenda|plan for (today|tomorrow)|what'?s on|what do i have|day look)\b", lower) and not create_intent:
         return _plan("Read the schedule", PlanStep(capability="calendar.inspect", arguments={"day": "tomorrow" if "tomorrow" in lower else "today"}))
 
     if re.search(r"\b(patterns?|how (am i|have i been) doing|productivity|focus score|insights?|streak|this week)\b", lower):
